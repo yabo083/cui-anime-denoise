@@ -37,6 +37,8 @@ build_*/
 build2/
 build*/
 
-# Exported ONNX models (regenerate with tools/export_onnx.py)
-models/
+# Exported ONNX models (regenerate with tools/export_onnx.py).
+# Full-weight *.onnx blobs stay ignored; the tiny weightless skeletons are
+# committed so installer builds are reproducible without running the exporter.
 *.onnx
+!models/*.skel.onnx
