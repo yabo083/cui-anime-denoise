@@ -708,7 +708,15 @@ static bool png_write_frame(IWICBitmapEncoder *encoder, const img_pixels *p,
     if (FAILED(frame->lpVtbl->SetSize(frame, (UINT)p->w, (UINT)p->h))) goto cleanup;
     if (FAILED(frame->lpVtbl->SetResolution(frame, 96, 96))) goto cleanup;
 
-    GUID format = GUID_WICPixelFormat32bppRGBA;
+    /* Fully opaque images go out as 24bpp RGB: Pillow did the same for RGB
+     * sources and it keeps the output file ~25% smaller. Anything with a
+     * real alpha channel keeps 32bpp. */
+    bool opaque = true;
+    for (size_t i = 0; i < count; i++) {
+        if (p->rgba[i * 4 + 3] != 255) { opaque = false; break; }
+    }
+    GUID format = opaque ? GUID_WICPixelFormat24bppBGR
+                         : GUID_WICPixelFormat32bppRGBA;
     if (FAILED(frame->lpVtbl->SetPixelFormat(frame, &format))) goto cleanup;
 
     if (icc && icc_size && icc_size <= UINT_MAX &&
@@ -717,8 +725,10 @@ static bool png_write_frame(IWICBitmapEncoder *encoder, const img_pixels *p,
         frame->lpVtbl->SetColorContexts(frame, 1, &ctx);   /* best effort */
     }
 
+    UINT stride;
     if (IsEqualGUID(&format, &GUID_WICPixelFormat32bppRGBA)) {
         source = p->rgba;
+        stride = (UINT)p->w * 4u;
     } else if (IsEqualGUID(&format, &GUID_WICPixelFormat32bppBGRA)) {
         bgra = (uint8_t *)malloc(count * 4);
         if (!bgra) goto cleanup;
@@ -729,11 +739,21 @@ static bool png_write_frame(IWICBitmapEncoder *encoder, const img_pixels *p,
             bgra[i * 4 + 3] = p->rgba[i * 4 + 3];
         }
         source = bgra;
+        stride = (UINT)p->w * 4u;
+    } else if (IsEqualGUID(&format, &GUID_WICPixelFormat24bppBGR)) {
+        bgra = (uint8_t *)malloc(count * 3);
+        if (!bgra) goto cleanup;
+        for (size_t i = 0; i < count; i++) {
+            bgra[i * 3 + 0] = p->rgba[i * 4 + 2];
+            bgra[i * 3 + 1] = p->rgba[i * 4 + 1];
+            bgra[i * 3 + 2] = p->rgba[i * 4 + 0];
+        }
+        source = bgra;
+        stride = (UINT)p->w * 3u;
     } else {
         goto cleanup;   /* anything else would silently change the pixels */
     }
 
-    UINT stride = (UINT)p->w * 4u;
     if (FAILED(frame->lpVtbl->WritePixels(frame, (UINT)p->h, stride, stride * (UINT)p->h,
                                           (BYTE *)source)))
         goto cleanup;
@@ -1059,5 +1079,34 @@ bool img_has_alpha(const img_pixels *p)
         if (p->rgba[i * 4 + 3] != 255) return true;
     }
     return false;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Composite                                                                  */
+/* ------------------------------------------------------------------------- */
+
+bool img_composite_masked(img_pixels *out, const img_pixels *orig,
+                          const uint8_t *den_rgb, const uint8_t *weight,
+                          int w, int h)
+{
+    if (!out || !orig || !orig->rgba || !den_rgb || !weight) return false;
+    if (orig->w != w || orig->h != h || w <= 0 || h <= 0) return false;
+    if (!img__pixels_alloc(w, h, out)) return false;
+
+    size_t count = (size_t)w * (size_t)h;
+    for (size_t i = 0; i < count; i++) {
+        /* worker.py: (den*255 + (src-den)*m + 127) // 255 per channel. The
+         * numerator can never go negative (src-den >= -den), so the integer
+         * division rounds exactly like numpy's floor here. */
+        int m = weight[i];
+        const uint8_t *s = orig->rgba + i * 4;
+        const uint8_t *d = den_rgb + i * 3;
+        uint8_t *o = out->rgba + i * 4;
+        o[0] = (uint8_t)((d[0] * 255 + (s[0] - d[0]) * m + 127) / 255);
+        o[1] = (uint8_t)((d[1] * 255 + (s[1] - d[1]) * m + 127) / 255);
+        o[2] = (uint8_t)((d[2] * 255 + (s[2] - d[2]) * m + 127) / 255);
+        o[3] = s[3];
+    }
+    return true;
 }
 

@@ -49,7 +49,7 @@ bool img_decode_file(const char *utf8_path, img_pixels *out);
 bool img_decode_file_ex(const char *utf8_path, img_pixels *out,
                         unsigned char **icc, size_t *icc_size);
 
-/* Same, from a memory buffer (worker previews, clipboard PNG). */
+/* Same, from a memory buffer (clipboard PNG, test fixtures). */
 bool img_decode_memory(const void *data, size_t size, img_pixels *out);
 
 /* Memory variant of img_decode_file_ex (CLI stdin path). */
@@ -72,7 +72,7 @@ bool img_encode_png_memory_icc(const img_pixels *p, const unsigned char *icc,
                                size_t icc_size, void **out, size_t *size);
 
 /* Encode into a malloc'ed buffer instead of a file (caller free()s). Used for
- * the clipboard's CF_PNG and for shipping masks to the worker without disk. */
+ * the clipboard's CF_PNG. */
 bool img_encode_png_memory(const img_pixels *p, void **out, size_t *size);
 bool img_encode_jpeg_memory(const img_pixels *p, int quality, void **out, size_t *size);
 
@@ -85,6 +85,19 @@ bool img_thumbnail(const img_pixels *src, int max_side, img_pixels *out);
 
 /* True when any pixel has alpha < 255. */
 bool img_has_alpha(const img_pixels *p);
+
+/* Blends a denoised RGB result back with the original RGBA under an 8-bit
+ * weight map (0 = denoised, 255 = original), the exact formula the reference
+ * worker used:
+ *
+ *   out = (den * 255 + (src - den) * weight + 127) / 255   per channel
+ *
+ * Alpha passes through from `orig`. `den_rgb` is tightly packed RGB8 (the
+ * engine's eng_image buffer), `weight` is w*h bytes (mask_feather's output).
+ * `orig` must be w x h. Allocates `out`; free with img_free. */
+bool img_composite_masked(img_pixels *out, const img_pixels *orig,
+                          const uint8_t *den_rgb, const uint8_t *weight,
+                          int w, int h);
 
 /* Clipboard. img_clipboard_get accepts CF_DIBV5, CF_DIB (incl. BI_BITFIELDS
  * and top-down bitmaps) and CF_PNG; img_clipboard_set writes PNG and a

@@ -392,6 +392,86 @@ static void test_failures(void)
     check(img_format_of("a.bin") == IMG_FMT_UNKNOWN, "format of .bin is IMG_FMT_UNKNOWN");
 }
 
+/* img_composite_masked: the host-side protect-region blend. The formula is
+ * out = (den * 255 + (src - den) * weight + 127) / 255 per RGB channel, with
+ * alpha passed through from the original -- the reference worker blended in
+ * float; the integer form rounds identically at 8 bpc. */
+static void test_composite(void)
+{
+    img_pixels orig = { NULL, 0, 0 };
+    img_pixels out = { NULL, 0, 0 };
+    uint8_t den[4 * 3];
+    uint8_t weight[4];
+
+    /* four pixels with distinct channels and alpha */
+    orig.w = 2;
+    orig.h = 2;
+    orig.rgba = (uint8_t *)malloc(4 * 4);
+    {
+        static const uint8_t v[16] = {
+            200, 100,  50, 255,    /* px0 */
+             30, 220,  90, 128,    /* px1 (semi-transparent) */
+             10,  20, 240,   0,    /* px2 (fully transparent) */
+            255,   0, 128,  64,    /* px3 */
+        };
+        memcpy(orig.rgba, v, 16);
+    }
+    for (int i = 0; i < 4; i++) {
+        den[i * 3 + 0] = (uint8_t)(20 + i * 40);
+        den[i * 3 + 1] = (uint8_t)(60 + i * 30);
+        den[i * 3 + 2] = (uint8_t)(10 + i * 60);
+    }
+
+    /* weight 0 everywhere: output equals the denoised RGB, alpha preserved */
+    memset(weight, 0, sizeof weight);
+    check(img_composite_masked(&out, &orig, den, weight, 2, 2),
+          "composite accepts a zero weight map");
+    if (out.rgba) {
+        check(out.w == 2 && out.h == 2, "composite output size matches");
+        check(memcmp(out.rgba + 0, den + 0, 3) == 0 && out.rgba[3] == 255,
+              "weight 0 gives denoised RGB + source alpha");
+        check(out.rgba[4 * 1 + 3] == 128 && out.rgba[4 * 2 + 3] == 0,
+              "alpha passes through at weight 0");
+        img_free(&out);
+    }
+
+    /* weight 255 everywhere: output equals the original */
+    memset(weight, 255, sizeof weight);
+    check(img_composite_masked(&out, &orig, den, weight, 2, 2),
+          "composite accepts a full weight map");
+    if (out.rgba) {
+        check(memcmp(out.rgba, orig.rgba, 16) == 0,
+              "weight 255 restores the original pixel-for-pixel");
+        img_free(&out);
+    }
+
+    /* interior weight: check the exact rounding on px0 channels */
+    weight[0] = 128; weight[1] = weight[2] = weight[3] = 0;
+    check(img_composite_masked(&out, &orig, den, weight, 2, 2),
+          "composite accepts a mixed weight map");
+    if (out.rgba) {
+        int expect_r = (den[0] * 255 + (orig.rgba[0] - den[0]) * 128 + 127) / 255;
+        int expect_g = (den[1] * 255 + (orig.rgba[1] - den[1]) * 128 + 127) / 255;
+        check(out.rgba[0] == (uint8_t)expect_r && out.rgba[1] == (uint8_t)expect_g,
+              "interior weight matches the worker's blend formula");
+        check(out.rgba[3] == orig.rgba[3],
+              "alpha unaffected by interior weight");
+        check(memcmp(out.rgba + 4, den + 3, 3) == 0,
+              "unweighted pixels stay denoised");
+        img_free(&out);
+    }
+
+    /* mismatched inputs are rejected, not crashy */
+    check(!img_composite_masked(&out, &orig, den, weight, 4, 4),
+          "wrong dimensions fail cleanly");
+    check(!img_composite_masked(&out, &orig, NULL, weight, 2, 2),
+          "NULL den_rgb fails cleanly");
+    check(!img_composite_masked(&out, &orig, den, NULL, 2, 2),
+          "NULL weight fails cleanly");
+
+    free(orig.rgba);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -404,6 +484,7 @@ int main(void)
     test_decode();
     test_clipboard();
     test_clipboard_dib();
+    test_composite();
     test_failures();
 
     img_shutdown();
