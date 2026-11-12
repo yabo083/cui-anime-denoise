@@ -108,7 +108,7 @@ static void pill_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
         double age = j->saved_at > 0.0 ? now_seconds() - j->saved_at : 99.0;
         bool tick = age < 2.5;
         if (tick) cui_request_wakeup(ui, (float)(2.5 - age));
-        cui_rect sv = { x, cy, tick ? 104.0f : PILL_SAVE_W, UI_SEG_H };
+        cui_rect sv = { x, cy, PILL_SAVE_W, UI_SEG_H };
         ui_button_draw(ui, sv, tick ? CUI_ICON_CHECK : CUI_ICON_SAVE,
                        tick ? "已保存" : "另存为", !tick, false, btn_state(ui, sv));
         if (tick)
@@ -276,71 +276,55 @@ static void tray_paint(cui_ctx *ui, app_state *st, cui_rect stage) {
 
 static const char *PTOOL_ICON[3] = { ICON_BRUSH, ICON_ERASER, ICON_LASSO };
 
-static void protect_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
-    st->r_protect = (cui_rect){ 0, 0, 0, 0 };
-    for (int i = 0; i < 3; i++) { st->r_tool[i] = (cui_rect){0,0,0,0}; st->r_p_slider[i] = (cui_rect){0,0,0,0}; }
-    st->r_undo = st->r_redo = st->r_peye = st->r_pinvert = st->r_pclear =
-        st->r_punprot = st->r_pdone = st->r_pcancel = (cui_rect){ 0, 0, 0, 0 };
-    if (!st->protect || !j) return;
-
-    /* content: tools | 3 sliders+values | undo/redo | eye invert clear |
-       unprotected | cancel done */
-    float w = UI_PILL_PAD * 2.0f
-            + 3 * UI_ICONBTN + UI_S4 * 2
-            + UI_S8
-            + 3 * (64.0f + 24.0f) + UI_S4 * 2
-            + UI_S8 + 2 * UI_ICONBTN_SM + UI_S4
-            + UI_S8 + 3 * UI_ICONBTN_SM + UI_S4 * 2
-            + UI_S8 + 76.0f + UI_S8 + 56.0f + UI_S4 + 56.0f;
-
-    float a = cui_animate(ui, cui_make_id(ui, "protect"), 1.0f);
-    cui_rect pr = { stage.x + (stage.w - w) * 0.5f, stage.y + UI_S8, w, UI_PROTECT_H };
-    pr.y -= (1.0f - a) * (UI_PROTECT_H + 8.0f);
-    st->r_protect = pr;
-    if (a < 0.02f) return;
-
-    cui_push_clip(ui, stage);
-    fl_card_draw(ui, pr, UI_R_FULL);
+/* One x-walk that lays out the toolbar's contents; run once with paint=false
+ * to measure the natural width and once with paint=true to draw it. The width
+ * can never drift from the layout the way a hand-summed constant did. */
+static float protect_lay(cui_ctx *ui, app_state *st, job *j, cui_rect pr, bool paint) {
     float x = pr.x + UI_PILL_PAD;
     float cy = pr.y + (UI_PROTECT_H - UI_ICONBTN) * 0.5f;
+    float cyc = pr.y + (UI_PROTECT_H - UI_ICONBTN_SM) * 0.5f;
 
     for (int i = 0; i < 3; i++) {
         cui_rect b = { x, cy, UI_ICONBTN, UI_ICONBTN };
-        ui_iconbtn_draw(ui, b, PTOOL_ICON[i], btn_state(ui, b), st->tool == (tool_mode)(i + 1));
-        st->r_tool[i] = b;
+        if (paint) {
+            ui_iconbtn_draw(ui, b, PTOOL_ICON[i], btn_state(ui, b), st->tool == (tool_mode)(i + 1));
+            st->r_tool[i] = b;
+        }
         x += UI_ICONBTN + UI_S4;
     }
     x += UI_S4;
-    cui_draw_rect(ui, (cui_rect){ x, pr.y + 10.0f, 1.0f, UI_PROTECT_H - 20.0f },
-                  CUI_CORNERS(0), fl_border(ui));
+    if (paint)
+        cui_draw_rect(ui, (cui_rect){ x, pr.y + 10.0f, 1.0f, UI_PROTECT_H - 20.0f },
+                      CUI_CORNERS(0), fl_border(ui));
     x += UI_S8;
 
     /* sliders: brush / 恢复比例 / 柔边, each with a value caption */
     float vals[3] = { st->brush_size, st->brush_mix, st->feather_px };
-    const char *fmt[3] = { "%.0f", "%.0f", "%.0f" };
     const char *suffix[3] = { "", "%", "" };
     for (int i = 0; i < 3; i++) {
         cui_rect sr = { x, pr.y + 6.0f, 64.0f, UI_PROTECT_H - 12.0f };
-        ui_slider_draw(ui, sr, vals[i],
-                       i == 0 ? BRUSH_KEY_MIN : 0.0f,
-                       i == 0 ? BRUSH_KEY_MAX : (i == 1 ? 100.0f : 150.0f),
-                       st->drag_ctl == (int)(CTL_P_BRUSH + i));
-        st->r_p_slider[i] = sr;
-        char vb[16];
-        snprintf(vb, sizeof vb, fmt[i], (double)vals[i]);
-        if (suffix[i][0]) strncat(vb, suffix[i], sizeof vb - strlen(vb) - 1);
-        cui_text_metrics tm = cui_measure_text(ui, CUI_FONT_BODY, UI_FS_CAPTION, vb, -1);
-        cui_draw_text(ui, CUI_FONT_BODY, UI_FS_CAPTION,
-                      (cui_vec2){ x + 68.0f, pr.y + (UI_PROTECT_H - tm.height) * 0.5f },
-                      fl_text3(ui), vb, -1);
+        if (paint) {
+            ui_slider_draw(ui, sr, vals[i],
+                           i == 0 ? BRUSH_KEY_MIN : 0.0f,
+                           i == 0 ? BRUSH_KEY_MAX : (i == 1 ? 100.0f : 150.0f),
+                           st->drag_ctl == (int)(CTL_P_BRUSH + i));
+            st->r_p_slider[i] = sr;
+            char vb[16];
+            snprintf(vb, sizeof vb, "%.0f", (double)vals[i]);
+            if (suffix[i][0]) strncat(vb, suffix[i], sizeof vb - strlen(vb) - 1);
+            cui_text_metrics tm = cui_measure_text(ui, CUI_FONT_BODY, UI_FS_CAPTION, vb, -1);
+            cui_draw_text(ui, CUI_FONT_BODY, UI_FS_CAPTION,
+                          (cui_vec2){ x + 68.0f, pr.y + (UI_PROTECT_H - tm.height) * 0.5f },
+                          fl_text3(ui), vb, -1);
+        }
         x += 64.0f + 24.0f + UI_S4;
     }
     x += UI_S4;
-    cui_draw_rect(ui, (cui_rect){ x, pr.y + 10.0f, 1.0f, UI_PROTECT_H - 20.0f },
-                  CUI_CORNERS(0), fl_border(ui));
+    if (paint)
+        cui_draw_rect(ui, (cui_rect){ x, pr.y + 10.0f, 1.0f, UI_PROTECT_H - 20.0f },
+                      CUI_CORNERS(0), fl_border(ui));
     x += UI_S8;
 
-    float cyc = pr.y + (UI_PROTECT_H - UI_ICONBTN_SM) * 0.5f;
     struct { cui_rect *r; const char *icon; bool on; bool disabled; } small[] = {
         { &st->r_undo,   CUI_ICON_UNDO_2, false, !mask_can_undo(j->hist) },
         { &st->r_redo,   CUI_ICON_REDO_2, false, !mask_can_redo(j->hist) },
@@ -350,11 +334,13 @@ static void protect_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
     };
     for (int i = 0; i < 5; i++) {
         cui_rect b = { x, cyc, UI_ICONBTN_SM, UI_ICONBTN_SM };
-        int s = small[i].disabled ? 0 : btn_state(ui, b);
-        ui_iconbtn_draw(ui, b, small[i].icon, s, small[i].on);
-        if (small[i].disabled)
-            cui_draw_rect(ui, b, CUI_CORNERS(UI_R_MD), CUI_RGBA(fl_dark(ui) ? 0x00000040 : 0xFFFFFF66));
-        *small[i].r = b;
+        if (paint) {
+            int s = small[i].disabled ? 0 : btn_state(ui, b);
+            ui_iconbtn_draw(ui, b, small[i].icon, s, small[i].on);
+            if (small[i].disabled)
+                cui_draw_rect(ui, b, CUI_CORNERS(UI_R_MD), CUI_RGBA(fl_dark(ui) ? 0x00000040 : 0xFFFFFF66));
+            *small[i].r = b;
+        }
         x += UI_ICONBTN_SM + UI_S4;
         if (i == 1) x += UI_S4;
     }
@@ -362,21 +348,48 @@ static void protect_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
 
     /* 未保护结果 toggle */
     cui_rect up = { x, cyc, 76.0f, UI_ICONBTN_SM };
-    ui_button_draw(ui, up, NULL, "未保护", false, !j->has_result, btn_state(ui, up));
-    if (st->view_unprotected)
-        cui_draw_rect_border(ui, up, CUI_CORNERS(UI_R_MD), CUI_TRANSPARENT, accent(ui), 1.5f);
-    st->r_punprot = up;
+    if (paint) {
+        ui_button_draw(ui, up, NULL, "未保护", false, !j->has_result, btn_state(ui, up));
+        if (st->view_unprotected)
+            cui_draw_rect_border(ui, up, CUI_CORNERS(UI_R_MD), CUI_TRANSPARENT, accent(ui), 1.5f);
+        st->r_punprot = up;
+    }
     x += up.w + UI_S8;
 
     cui_rect cc = { x, cyc, 56.0f, UI_ICONBTN_SM };
-    ui_button_draw(ui, cc, NULL, "取消", false, false, btn_state(ui, cc));
-    st->r_pcancel = cc;
+    if (paint) {
+        ui_button_draw(ui, cc, NULL, "取消", false, false, btn_state(ui, cc));
+        st->r_pcancel = cc;
+    }
     x += cc.w + UI_S4;
 
     cui_rect dn = { x, cyc, 56.0f, UI_ICONBTN_SM };
-    ui_button_draw(ui, dn, NULL, "完成", true, false, btn_state(ui, dn));
-    st->r_pdone = dn;
+    if (paint) {
+        ui_button_draw(ui, dn, NULL, "完成", true, false, btn_state(ui, dn));
+        st->r_pdone = dn;
+    }
+    return x + dn.w;
+}
 
+static void protect_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
+    st->r_protect = (cui_rect){ 0, 0, 0, 0 };
+    for (int i = 0; i < 3; i++) { st->r_tool[i] = (cui_rect){0,0,0,0}; st->r_p_slider[i] = (cui_rect){0,0,0,0}; }
+    st->r_undo = st->r_redo = st->r_peye = st->r_pinvert = st->r_pclear =
+        st->r_punprot = st->r_pdone = st->r_pcancel = (cui_rect){ 0, 0, 0, 0 };
+    if (!st->protect || !j) return;
+
+    float a = cui_animate(ui, cui_make_id(ui, "protect"), 1.0f);
+    cui_rect pr = { stage.x, stage.y + UI_S8, 0.0f, UI_PROTECT_H };
+    float w = protect_lay(ui, st, j, pr, false) - pr.x + UI_PILL_PAD;
+    pr.x = stage.x + (stage.w - w) * 0.5f;
+    pr.w = w;
+    pr.y -= (1.0f - a) * (UI_PROTECT_H + 8.0f);
+    st->r_protect = pr;
+    if (a < 0.02f) return;
+
+    cui_push_clip(ui, stage);
+    fl_card_draw(ui, pr, UI_R_FULL);
+    protect_lay(ui, st, j, pr, true);
     cui_pop_clip(ui);
 }
 
