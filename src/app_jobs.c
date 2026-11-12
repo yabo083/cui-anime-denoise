@@ -205,7 +205,7 @@ static job *job_add_decoded(app_state *st, loader_result *r) {
     j->feather_px = (int)(st->feather_px + 0.5f);
     j->split = 0.5f;
     j->hist = mask_hist_new(0);
-    mask_init(&j->m, r->full.w, r->full.h);
+    mask_init(&j->m, j->orig.w, j->orig.h);
     out_paths(st, j);
 
     const img_pixels *disp = r->display.rgba ? &r->display : &j->orig;
