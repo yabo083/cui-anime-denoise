@@ -103,8 +103,11 @@ static void pill_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
         st->r_pill_brush = b;
         x += b.w + UI_S8;
 
-        /* save: accent; a done auto-save turns it into a tick for a moment */
-        bool tick = j->saved_at > 0.0 && now_seconds() - j->saved_at < 2.5;
+        /* save: accent; a done auto-save turns it into a tick for a moment;
+         * the wake-up makes the tick expire on time even while the app idles */
+        double age = j->saved_at > 0.0 ? now_seconds() - j->saved_at : 99.0;
+        bool tick = age < 2.5;
+        if (tick) cui_request_wakeup(ui, (float)(2.5 - age));
         cui_rect sv = { x, cy, tick ? 104.0f : PILL_SAVE_W, UI_SEG_H };
         ui_button_draw(ui, sv, tick ? CUI_ICON_CHECK : CUI_ICON_SAVE,
                        tick ? "已保存" : "另存为", !tick, false, btn_state(ui, sv));
@@ -127,6 +130,7 @@ static void pill_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
         float p = t < 0.5f ? t * 2.0f : (1.0f - t) * 2.0f;
         cui_draw_rect(ui, (cui_rect){ pr.x + span * p, pr.y - 3.0f, segw, 2.0f },
                       CUI_CORNERS(1.0f), accent(ui));
+        cui_request_redraw(ui);
     }
     cui_pop_clip(ui);
 }
@@ -223,9 +227,7 @@ static void tray_paint(cui_ctx *ui, app_state *st, cui_rect stage) {
         float bx = t.x + t.w - 13.0f, by = t.y + t.h - 13.0f;
         cui_vec2 bc = { bx + 6.5f, by + 6.5f };
         if (jb->status == JOB_RUNNING) {
-            float a0 = (float)(now_seconds() * 4.0);
-            cui_draw_circle(ui, bc, 7.0f, CUI_RGBA(0x00000066));
-            cui_draw_arc(ui, bc, 5.5f, a0, a0 + 4.0f, 2.0f, accent(ui));
+            fl_spinner(ui, bc, 5.5f, 2.0f, accent(ui));
         } else if (jb->status == JOB_DONE) {
             cui_draw_circle(ui, bc, 7.0f, cui_token_color(ui, CUI_TOKEN_SUCCESS));
             cui_draw_icon(ui, CUI_ICON_CHECK, (cui_rect){ bx + 2, by + 2, 9, 9 }, 9.0f,
@@ -480,9 +482,7 @@ static void banner_paint(cui_ctx *ui, app_state *st, cui_rect stage) {
     fl_card_draw(ui, br, UI_R_FULL);
     float x = br.x + UI_S16;
     if (st->booting) {
-        float a0 = (float)(now_seconds() * 3.6);
-        cui_draw_arc(ui, (cui_vec2){ x + 7, br.y + br.h * 0.5f }, 7.0f, a0, a0 + 4.0f,
-                     2.0f, accent(ui));
+        fl_spinner(ui, (cui_vec2){ x + 7, br.y + br.h * 0.5f }, 7.0f, 2.0f, accent(ui));
     } else {
         cui_draw_icon(ui, CUI_ICON_CIRCLE_ALERT,
                       (cui_rect){ x, br.y + br.h * 0.5f - 8, 16, 16 }, 16.0f,

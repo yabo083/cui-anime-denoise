@@ -45,5 +45,9 @@ int ui_seg_hit(cui_rect r, int count, float mx);
 void ui_slider_draw(cui_ctx *ui, cui_rect r, float value, float lo, float hi,
                     bool active);
 float ui_slider_value(cui_rect r, float mx, float lo, float hi, float step);
+/* Indeterminate ring for the hand-drawn layers (stock cui_spinner only lives
+ * inside a layout). Same shape as CUI's spinner, and it asks for the next
+ * frame itself so it actually rotates under the event-driven frame pacing. */
+void fl_spinner(cui_ctx *ui, cui_vec2 center, float radius, float thick, cui_color c);
 
 #endif /* UI_FLUENT_H */

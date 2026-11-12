@@ -213,3 +213,14 @@ float ui_slider_value(cui_rect r, float mx, float lo, float hi, float step) {
     if (v > hi) v = hi;
     return v;
 }
+
+void fl_spinner(cui_ctx *ui, cui_vec2 center, float radius, float thick, cui_color c) {
+    /* same sweep as CUI's own spinner: a faint track ring and a head arc whose
+     * length breathes while it rotates */
+    float t = (float)cui_time(ui);
+    cui_draw_arc(ui, center, radius, 0, 6.28318530718f, thick, cui_alpha(c, 0.18f));
+    float head = t * 5.2f;
+    float len = 1.2f + 0.9f * sinf(t * 2.4f);
+    cui_draw_arc(ui, center, radius, head, head + len, thick, c);
+    cui_request_redraw(ui);
+}

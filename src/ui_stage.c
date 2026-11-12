@@ -328,6 +328,7 @@ static void draw_result_tex(cui_ctx *ui, app_state *st, job *j, cui_rect img) {
                        cui_alpha(CUI_RGBA(0xffffffff), 1.0f - ft));
         cui_draw_image(ui, tex, img, (cui_rect){ 0, 0, 1, 1 }, CUI_CORNERS(0),
                        cui_alpha(CUI_RGBA(0xffffffff), ft));
+        cui_request_redraw(ui);
         return;
     }
     if (tex) cui_draw_image(ui, tex, img, (cui_rect){ 0, 0, 1, 1 }, CUI_CORNERS(0), CUI_RGBA(0xffffffff));
@@ -451,6 +452,7 @@ static void stage_paint(cui_ctx *ui, cui_rect r, void *user) {
             else if (j->mask_fade_from > 0.0) {
                 alpha = 1.0f - (float)((now_seconds() - j->mask_fade_from) / UI_T_MASKFADE);
                 if (alpha < 0.0f) alpha = 0.0f;
+                else cui_request_redraw(ui);   /* the fade keeps its 0.7 s cadence */
             }
         }
         if (alpha > 0.0f)
@@ -510,9 +512,7 @@ static void stage_paint(cui_ctx *ui, cui_rect r, void *user) {
         cui_draw_rect(ui, r, CUI_CORNERS(0), CUI_RGBA(cui_get_theme_mode(ui) == CUI_THEME_DARK
                                                     ? 0x00000066 : 0xffffff66));
         float cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f - 20.0f;
-        float a0 = (float)(now_seconds() * 2.4);
-        cui_draw_arc(ui, (cui_vec2){ cx, cy }, 24.0f, a0, a0 + 4.4f, 3.5f,
-                     cui_token_color(ui, CUI_TOKEN_ACCENT));
+        fl_spinner(ui, (cui_vec2){ cx, cy }, 24.0f, 3.5f, cui_token_color(ui, CUI_TOKEN_ACCENT));
         const char *phase = j->phase[0] ? j->phase : "处理中";
         if (strcmp(phase, "upscale") == 0) phase = "超分辨率重建…";
         else if (strcmp(phase, "smooth") == 0) phase = "L0 平滑…";
