@@ -71,3 +71,24 @@ add_custom_command(TARGET AnimeDenoise POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/worker" "$<TARGET_FILE_DIR:AnimeDenoise>/worker"
     COMMENT "Copying assets and worker next to the executable")
+
+# Native engine runtime: the ORT/DirectML DLLs load from <exe dir>\runtime\ and
+# the bundled model from <exe dir>\models\ (see src/engine/engine.c).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/_dl/runtime/onnxruntime.dll")
+    add_custom_command(TARGET AnimeDenoise POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/_dl/runtime" "$<TARGET_FILE_DIR:AnimeDenoise>/runtime"
+        COMMENT "Copying ORT/DirectML runtime next to the executable")
+else()
+    message(WARNING "_dl/runtime/onnxruntime.dll is missing: run tools/fetch_deps.ps1 "
+                    "before running anything that uses the native engine")
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/esrgan_anime6b_x4.onnx")
+    add_custom_command(TARGET AnimeDenoise POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/models" "$<TARGET_FILE_DIR:AnimeDenoise>/models"
+        COMMENT "Copying ONNX models next to the executable")
+else()
+    message(WARNING "models/esrgan_anime6b_x4.onnx is missing: run tools/export_onnx.py "
+                    "to export the bundled model")
+endif()
