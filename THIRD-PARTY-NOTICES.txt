@@ -1,72 +1,82 @@
 Anime Denoise — third-party notices
 ===================================
 
-This program bundles the following third-party components. Their full license
-texts ship alongside them in the installed assets folder.
+This program bundles the following third-party components. Full license texts
+ship alongside them in the installed assets\ folder where noted.
 
-1. gpt-anime-denoise (denoising pipeline: Real-ESRGAN upscaling + L0 smoothing)
-   Location : assets/python/denoise.py
+1. gpt-anime-denoise (the denoising pipeline this program re-implements:
+   Real-ESRGAN upscaling + L0 smoothing + model/preset tables)
    License  : MIT, Copyright (c) 2026 CXP-2024
-   License  : assets/python/LICENSE-gpt-anime-denoise.txt
+   License  : assets\LICENSE-gpt-anime-denoise.txt
    Source   : https://github.com/CXP-2024/gpt-anime-denoise
 
-2. RealESRGAN_x4plus_anime_6B.pth (model weights, downloaded on first run)
-   License  : BSD-3-Clause, Copyright (c) 2021, Xintao Wang
+2. Real-ESRGAN anime-6B weights (redistributed as
+   models\esrgan_anime6b_x4.onnx, converted from
+   RealESRGAN_x4plus_anime_6B.pth)
+   License  : BSD 3-Clause License, Copyright (c) 2021, Xintao Wang and
+              contributors
    Source   : https://github.com/xinntao/Real-ESRGAN
-   The weights are not redistributed with this program; the app downloads them
-   from the upstream release and verifies the SHA-256 published in denoise.py.
 
-3. CUI (immediate-mode UI framework)
-   License  : MIT
-   Source   : https://github.com/yappologistic/CUI
-   Copyright (c) CUI contributors.
+   Redistribution and use in source and binary forms, with or without
+   modification, are permitted provided that the following conditions are met:
 
-4. Lucide icons
-   Location : assets/fonts/lucide.ttf
-   License  : ISC
-   License  : assets/fonts/LICENSE-Lucide.txt
-   Source   : https://lucide.dev
+   1. Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimer.
+   2. Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+   3. Neither the name of the copyright holder nor the names of its
+      contributors may be used to endorse or promote products derived from
+      this software without specific prior written permission.
 
-5. HarmonyOS Sans SC (Regular and Medium, GB2312 subset)
-   Location : assets/fonts/HarmonyOS-Sans-SC-*.ttf
-   License  : HarmonyOS Sans Fonts License Agreement, Copyright 2021 Huawei
-              Device Co., Ltd. Redistributed unmodified apart from the glyph
-              subset; not sold or distributed on a stand-alone basis.
-   License  : assets/fonts/LICENSE-HarmonyOS-Sans.txt
+   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+   ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+   CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+   POSSIBILITY OF SUCH DAMAGE.
 
-6. PyTorch, torchvision, spandrel, numpy, Pillow, psutil (installed on first run
-   into %LOCALAPPDATA%\AnimeDenoise\runtime)
-   Licenses : BSD-3-Clause (PyTorch, torchvision, numpy), MIT (spandrel, Pillow),
-              BSD-3-Clause (psutil)
-   These are downloaded from their official indexes at runtime, not bundled.
+3. Real-CUGAN weights (up2x-latest-denoise3x.pth, optional model)
+   Source   : https://github.com/bilibili/ailab (Real-CUGAN)
+   The weights are NOT redistributed with this program. When the user picks
+   the CUGAN model the app downloads the upstream release archive, verifies
+   the published SHA-256, and extracts the .pth into
+   %LOCALAPPDATA%\AnimeDenoise\models. The bundled
+   models\cugan_up2x_denoise3x.skel.onnx is a weightless graph that reads the
+   downloaded .pth as external data. License terms follow the upstream
+   repository.
 
-7. uv (Python package manager, downloaded on first run)
-   License  : MIT or Apache-2.0
-   Source   : https://github.com/astral-sh/uv
+4. APISR RRDB weights (2x_APISR_RRDB_GAN_generator.pth, optional model)
+   Source   : https://github.com/Kiteretsu77/APISR
+   Same arrangement as item 3: the app downloads the upstream .pth on demand
+   (SHA-256 verified); models\apisr_rrdb_x2.skel.onnx is the weightless graph.
+   License terms follow the upstream repository.
 
-8. Inno Setup (installer runtime)
-   License  : Inno Setup License (free to use, including commercial)
-   Source   : https://jrsoftware.org/isinfo.php
-
-9. ONNX Runtime + DirectML (native inference runtime, onnxruntime.dll and
-   DirectML.dll loaded from <exe>\runtime)
-   Licenses : MIT (ONNX Runtime, Copyright Microsoft Corporation),
-              MIT (DirectML, Copyright Microsoft Corporation)
-   License  : third_party/onnxruntime/LICENSE.txt
-              third_party/onnxruntime/LICENSE-DirectML.txt
-              third_party/onnxruntime/ThirdPartyNotices.txt
-              third_party/onnxruntime/ThirdPartyNotices-DirectML.txt
+5. ONNX Runtime (onnxruntime.dll, onnxruntime_providers_shared.dll under
+   runtime\)
+   License  : MIT, Copyright (c) Microsoft Corporation
+   License  : assets\licenses\LICENSE-onnxruntime.txt
+              assets\licenses\ThirdPartyNotices-onnxruntime.txt
    Source   : https://github.com/microsoft/onnxruntime
-              https://github.com/microsoft/DirectML
 
-10. pocketfft (C FFT used by the L0 smoothing pass)
-   Location : third_party/pocketfft
+6. DirectML (DirectML.dll under runtime\)
+   License  : MIT, Copyright (c) Microsoft Corporation
+   License  : assets\licenses\LICENSE-DirectML.txt
+              assets\licenses\ThirdPartyNotices-DirectML.txt
+   Source   : https://github.com/microsoft/DirectML
+
+7. pocketfft (C FFT used by the L0 smoothing pass)
    License  : BSD-3-Clause, Copyright (c) 2019-2024 Martin Reinecke and others
-   License  : third_party/pocketfft/LICENSE.md
+   License  : assets\licenses\LICENSE-pocketfft.md
    Source   : https://gitlab.mpcdf.mpg.de/mtr/pocketfft
 
-11. Pillow (src/engine/resample.c is a byte-identical C port of
-    libImaging/Resample.c's 8bpc BOX/LANCZOS path)
+8. Pillow (src\engine\resample.c is a byte-identical C port of
+   libImaging/Resample.c's 8bpc BOX/LANCZOS path)
    License  : Historical Permission Notice and Disclaimer (HPND),
               Copyright (c) 1997-2011 Secret Labs AB,
               Copyright (c) 1995-2011 Fredrik Lundh and contributors,
@@ -105,3 +115,26 @@ texts ship alongside them in the installed assets folder.
    OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
    PERFORMANCE OF THIS SOFTWARE.
 
+9. CUI (immediate-mode UI framework, statically linked)
+   License  : MIT, Copyright (c) CUI contributors
+   License  : assets\licenses\LICENSE-CUI.txt
+   Source   : https://github.com/yappologistic/CUI
+   CUI in turn embeds stb_image / stb_image_write / stb_truetype /
+   stb_rect_pack (public domain / MIT) — see the CUI repository,
+   third_party/ directory.
+
+10. Lucide icons (assets\fonts\lucide.ttf)
+    License  : ISC
+    License  : assets\fonts\LICENSE-Lucide.txt
+    Source   : https://lucide.dev
+
+11. HarmonyOS Sans SC (Regular and Medium, GB2312 subset)
+    Location : assets\fonts\HarmonyOS-Sans-SC-*.ttf
+    License  : HarmonyOS Sans Fonts License Agreement, Copyright 2021 Huawei
+               Device Co., Ltd. Redistributed unmodified apart from the glyph
+               subset; not sold or distributed on a stand-alone basis.
+    License  : assets\fonts\LICENSE-HarmonyOS-Sans.txt
+
+12. Inno Setup (installer builder; the setup program embeds its runtime)
+    License  : Inno Setup License (free to use, including commercial)
+    Source   : https://jrsoftware.org/isinfo.php
