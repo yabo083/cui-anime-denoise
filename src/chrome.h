@@ -48,4 +48,12 @@ bool chrome_is_active(void);
  * (canvas zoom) and never to CUI, which would scroll the sidebar instead. */
 float chrome_take_wheel(void);
 
+/* Publishes the clickable rects inside the title band: x,y,w,h quads in
+ * logical points, client space (the same space as cui_mouse_pos). The title
+ * bar is HTCAPTION by default so it drags the window; inside a published zone
+ * the hit test reports HTCLIENT and the app's own controls (filename link,
+ * device pill, gear, help, caption buttons) receive their clicks. Replaces the
+ * previous set; call again every frame the title bar paints. */
+void chrome_set_zones(const float *xywh, int count);
+
 #endif /* CHROME_H */

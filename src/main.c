@@ -4,6 +4,7 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 
 #include "app.h"
+#include "ui_tokens.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,9 +59,9 @@ int main(void) {
         .title = APP_TITLE,
         .width = st.set.window_w > 640 ? st.set.window_w : 1280,
         .height = st.set.window_h > 480 ? st.set.window_h : 860,
-        .min_width = 1000,
-        .min_height = 640,
-        .accent = CUI_ACCENT_CORAL,
+        .min_width = (int)UI_MIN_W,     /* spec §1: 900 x 560 */
+        .min_height = (int)UI_MIN_H,
+        .accent = CUI_ACCENT_BLUE,      /* Fluent blue; tokens retune it to #0067C0/#4CC2FF */
         .follow_system_theme = st.set.theme_mode == 0,
         .theme = st.set.theme_mode == 2 ? CUI_THEME_DARK : CUI_THEME_LIGHT,
     });
@@ -68,7 +69,7 @@ int main(void) {
         log_error("could not create the window");
         return 1;
     }
-    chrome_attach(cui_app_native_window(app), TOPBAR_H);
+    chrome_attach(cui_app_native_window(app), UI_TITLEBAR);
     chrome_set_dark(cui_get_theme_mode(cui_app_ui(app)) == CUI_THEME_DARK);
 
     while (cui_app_frame(app)) {

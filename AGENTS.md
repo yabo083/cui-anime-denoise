@@ -24,8 +24,10 @@ Windows 原生去噪工具：C + CUI 即时模式 UI，进程内 ONNX Runtime（
 | 任务生命周期、队列、合成调度 | `docs/design.md` §2/§5 | `src/app_jobs.c` |
 | 快捷键、拖放、粘贴、另存 | `docs/design.md` §4/§5 | `src/app_input.c` |
 | 窗口边框、拖动、缩放、标题栏 | `docs/design.md` §3 | `src/chrome.c`, `src/main.c` |
-| 界面外观、组件尺寸、一致性 | `docs/design.md` §4、`src/ui_tokens.h` | `src/ui_shell.c`, `src/ui_stage.c` |
-| 画布交互、笔刷、套索、缩放 | `docs/design.md` §4/§5 | `src/ui_stage.c`, `src/mask.c` |
+| Fluent 布局规范、浮层、快捷键表 | `docs/fluent-redesign.md`（权威） | `src/ui_float.c`, `src/app_input.c` |
+| 界面外观、组件尺寸、一致性 | `docs/design.md` §4、`src/ui_tokens.h` | `src/ui_shell.c`, `src/ui_fluent.c` |
+| 画布交互、笔刷、缩放 | `docs/design.md` §4/§5 | `src/ui_stage.c`, `src/mask.c` |
+| 磁性套索 | `docs/fluent-redesign.md` §7 | `src/ui_lasso.c`, `src/mask.c` |
 | 保护蒙版算法、羽化、撤销 | `src/mask.h` 注释、`lib` 里 `mask.c` 文件头 | `src/mask.c` |
 | 图片编解码、剪贴板、保护合成 | `src/img.h` 注释 | `src/img.c` |
 | 设置、路径、日志、崩溃、诊断包 | `src/config.h` 注释 | `src/config.c`（设置/路径）、`src/log.c`（日志/崩溃/诊断包） |
@@ -37,11 +39,16 @@ Windows 原生去噪工具：C + CUI 即时模式 UI，进程内 ONNX Runtime（
 ## 目录边界
 
 ```
-src/app.c      状态机、denoiser 事件、意图处理（不含绘制）
+src/app.c      状态机、denoiser 事件、意图处理、帧编排（不含绘制）
 src/app_jobs.c 任务生命周期、加载队列、提交、宿主侧保护合成
-src/app_input.c 键盘命令、拖放、粘贴、另存为、文件对话框
-src/ui_shell.c 顶栏 / 侧栏 / 缩略图条 / 状态行
-src/ui_stage.c 画布：对比、笔刷、套索、缩放
+src/app_input.c 键盘命令、拖放、粘贴、另存为、文件对话框、保护模式进出
+src/ui_shell.c 40px 标题栏、设置侧栏、帮助/关于/更新对话框
+src/ui_stage.c 画布地板、对比分屏、遮罩叠加、笔刷光标、阶段输入
+src/ui_lasso.c 磁性套索：锚点、live-wire、闭合/减选（stage 拆出）
+src/ui_float.c 浮层：主控 pill、胶片托盘、保护工具条、微调卡、横幅、空态、浮层命中
+src/ui_fluent.c Fluent 调色板上 token + 自绘控件原语（seg/按钮/滑杆/图标钮）
+src/ui_fluent.h 上述原语的声明 + 无 token 角色的规范色
+src/ui_tokens.h 视觉 token 唯一来源（几何/字号/圆角/动效；颜色走 CUI token）
 src/denoiser.c 进程内推理工作线程：任务/事件环、SR 缓存、设备与模型管理
 src/loader.c   图片解码线程（解码 + 缩放 + 缩略图，UI 只建纹理）
 src/img.c      WIC 解码/编码/缩放/剪贴板/保护合成

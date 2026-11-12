@@ -1,7 +1,17 @@
-/* ui_shell.c -- see AGENTS.md for the routing table and docs/design.md for the rules. */
+/* ui_shell.c -- the window chrome: the 40px title bar and the second-layer
+ * surfaces (settings sheet, help/about/update dialogs).
+ *
+ * The title bar is hand-drawn inside a canvas for the same reason as the
+ * floating layers: exact WinUI caption buttons (46x40, red close hover) and
+ * a clickable filename need pixel control. Hit rects are published into
+ * app_state and additionally to chrome_set_zones() so WM_NCHITTEST reports
+ * HTCLIENT over them -- the rest of the band still drags the window.
+ */
 
 #include "app.h"
+#include "chrome.h"
 #include "icons.h"
+#include "ui_fluent.h"
 #include "ui_tokens.h"
 
 #include <math.h>
@@ -9,514 +19,379 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* What cui_separator draws: 1pt. The strip centers its tile row in what its own
- * hairline leaves, so the tiles are optically centered in UI_STRIP. */
-#define UI_HAIRLINE 1.0f
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 
-/* The queue is a result list, not a parameter: it keeps a fixed share of the
- * sidebar's height (percent, for CUI_PCT) instead of growing with its content. */
-#define UI_QUEUE_PCT 40.0f
+/* Own copy of the press-edge tracker (see ui_float.c's note). */
+static bool tb_pressed(cui_ctx *ui) {
+    static bool was;
+    bool down = cui_mouse_down(ui, CUI_MOUSE_LEFT);
+    bool hit = down && !was;
+    was = down;
+    return hit;
+}
+
+static cui_color text1(cui_ctx *ui) { return cui_token_color(ui, CUI_TOKEN_FOREGROUND); }
 
 /* ------------------------------------------------------------------------ */
-/* Tiles                                                                    */
+/* Title bar                                                                 */
 /* ------------------------------------------------------------------------ */
 
-/* One painter for every 62pt tile: the thumbnails and the "add" tile differ
- * only in what sits inside the frame, never in the frame itself (§4.4). */
-typedef struct tile_ctx {
-    cui_texture tex;    /* 0 draws the placeholder; the "add" tile ignores it */
-    bool is_add;
-    bool selected;
-} tile_ctx;
+typedef struct title_ctx { app_state *st; } title_ctx;
 
-/* Paint runs after layout, when CUI's own hit state already belongs to the
- * last widget built, so the tile asks the pointer about its own rect. */
-static bool pointer_in(cui_ctx *ui, cui_rect r) {
+/* One caption button: state layer on hover, Fluent red for close. */
+static void caption_draw(cui_ctx *ui, cui_rect r, const char *icon, bool is_close) {
     cui_vec2 m = cui_mouse_pos(ui);
-    return m.x >= r.x && m.x < r.x + r.w && m.y >= r.y && m.y < r.y + r.h;
-}
-
-static void tile_paint(cui_ctx *ui, cui_rect r, void *user) {
-    const tile_ctx *t = (const tile_ctx *)user;
-    bool hot = t->is_add && pointer_in(ui, r);
-    cui_color bg = t->selected ? CUI_COLOR_ACCENT_SUBTLE : CUI_COLOR_SURFACE_RAISED;
-    cui_draw_rect(ui, r, CUI_CORNERS(UI_R_TILE), bg);
-
-    /* the picture is inset one point so the border never eats into it */
-    cui_rect inner = { r.x + 1.0f, r.y + 1.0f, r.w - 2.0f, r.h - 2.0f };
-    if (t->is_add) {
-        cui_draw_icon(ui, CUI_ICON_PLUS, inner, UI_ICON_LG, hot ? CUI_COLOR_ACCENT : CUI_COLOR_TEXT_MUTED);
-    } else if (t->tex) {
-        cui_draw_image(ui, t->tex, inner, (cui_rect){ 0, 0, 1, 1 }, CUI_CORNERS(UI_R_TILE - 1.0f),
-                       CUI_RGBA(0xffffffff));
-    } else {
-        cui_draw_icon(ui, CUI_ICON_IMAGE, inner, UI_ICON_LG, CUI_COLOR_TEXT_MUTED);
+    int s = ui_hit(r, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
+    if (s && is_close) {
+        cui_draw_rect(ui, r, CUI_CORNERS(0),
+                      s == 2 ? CUI_RGBA(0xA52F1Bff) : CUI_RGBA(0xC42B1Cff));
+        cui_draw_icon(ui, icon, r, 15.0f, CUI_RGBA(0xffffffff));
+        return;
     }
-    /* the ring insets one point like the picture: a selected tile never grows
-     * past the frame its neighbours are laid out at */
-    cui_draw_rect_border(ui, inner, CUI_CORNERS(UI_R_TILE - 1.0f), CUI_RGBA(0x00000000),
-                         (t->selected || hot) ? CUI_COLOR_ACCENT : CUI_COLOR_BORDER,
-                         t->selected ? 2.0f : 1.0f);
+    if (s == 1) cui_draw_rect(ui, r, CUI_CORNERS(0), fl_hover(ui));
+    else if (s == 2) cui_draw_rect(ui, r, CUI_CORNERS(0), fl_press(ui));
+    cui_draw_icon(ui, icon, r, 15.0f,
+                  chrome_is_active() ? text1(ui) : fl_text3(ui));
 }
 
-/* Top bar                                                                  */
+static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
+    app_state *st = ((title_ctx *)user)->st;
+    job *j = job_selected(st);
+
+    cui_draw_rect(ui, r, CUI_CORNERS(0), cui_token_color(ui, CUI_TOKEN_BACKGROUND));
+    cui_draw_rect(ui, (cui_rect){ r.x, r.y + r.h - 1.0f, r.w, 1.0f }, CUI_CORNERS(0),
+                  fl_border(ui));
+
+    float zones[24 * 4];
+    int zn = 0;
+#define ZONE(rect) do { \
+        cui_rect _z = (rect); \
+        if (zn < 24) { zones[zn*4] = _z.x; zones[zn*4+1] = _z.y; \
+                       zones[zn*4+2] = _z.w; zones[zn*4+3] = _z.h; zn++; } \
+    } while (0)
+
+    /* left: icon + name + filename link */
+    float x = r.x + UI_S12;
+    float cy = r.y + r.h * 0.5f;
+    cui_draw_icon(ui, CUI_ICON_SPARKLES, (cui_rect){ x, cy - 8, 16, 16 }, 16.0f,
+                  cui_token_color(ui, CUI_TOKEN_ACCENT));
+    x += 22.0f;
+    cui_text_metrics tm = cui_measure_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY, APP_TITLE, -1);
+    cui_draw_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY, (cui_vec2){ x, cy - tm.height * 0.5f },
+                  text1(ui), APP_TITLE, -1);
+    x += tm.width + UI_S16;
+
+    if (j) {
+        cui_text_metrics fn = cui_measure_text(ui, CUI_FONT_BODY, UI_FS_CAPTION, j->name, -1);
+        cui_rect link = { x - 6.0f, cy - 12.0f, fn.width + 12.0f, 24.0f };
+        bool hot = ui_hit(link, cui_mouse_pos(ui));
+        if (hot) cui_draw_rect(ui, link, CUI_CORNERS(UI_R_MD), fl_hover(ui));
+        cui_draw_text(ui, CUI_FONT_BODY, UI_FS_CAPTION,
+                      (cui_vec2){ x, cy - fn.height * 0.5f },
+                      hot ? cui_token_color(ui, CUI_TOKEN_ACCENT) : fl_text3(ui), j->name, -1);
+        if (hot)
+            cui_draw_rect(ui, (cui_rect){ x, cy + fn.height * 0.5f + 1.0f, fn.width, 1.0f },
+                          CUI_CORNERS(0), cui_token_color(ui, CUI_TOKEN_ACCENT));
+        st->r_title_name = link;
+        ZONE(link);
+        x += fn.width + UI_S12;
+    } else {
+        st->r_title_name = (cui_rect){ 0, 0, 0, 0 };
+    }
+
+    /* right: [device pill] [update] [help] [settings]   [─][□][×] */
+    float cx0 = r.x + r.w - UI_CAPTION_BUTTONS;
+    st->r_close = (cui_rect){ cx0 + UI_CAPTION_W * 2.0f, r.y, UI_CAPTION_W, UI_TITLEBAR };
+    st->r_max   = (cui_rect){ cx0 + UI_CAPTION_W,        r.y, UI_CAPTION_W, UI_TITLEBAR };
+    st->r_min   = (cui_rect){ cx0,                        r.y, UI_CAPTION_W, UI_TITLEBAR };
+    ZONE(st->r_min); ZONE(st->r_max); ZONE(st->r_close);
+    caption_draw(ui, st->r_min, CUI_ICON_MINUS, false);
+    caption_draw(ui, st->r_max,
+                 chrome_is_maximized() ? ICON_MINIMIZE : ICON_MAXIMIZE, false);
+    caption_draw(ui, st->r_close, CUI_ICON_X, true);
+
+    float rx = cx0 - UI_S8;
+    /* settings + help icon buttons (28x28) */
+    cui_rect ib = { rx - UI_ICONBTN_SM, cy - UI_ICONBTN_SM * 0.5f, UI_ICONBTN_SM, UI_ICONBTN_SM };
+    st->r_title_settings = ib;
+    {
+        cui_vec2 m = cui_mouse_pos(ui);
+        int s = ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
+        ui_iconbtn_draw(ui, ib, CUI_ICON_SETTINGS, s, st->show_settings);
+    }
+    ZONE(ib); rx = ib.x - UI_S4;
+    ib.x = rx - UI_ICONBTN_SM;
+    st->r_title_help = ib;
+    {
+        cui_vec2 m = cui_mouse_pos(ui);
+        int s = ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
+        ui_iconbtn_draw(ui, ib, CUI_ICON_CIRCLE_HELP, s, st->show_help);
+    }
+    ZONE(ib); rx = ib.x - UI_S4;
+
+    /* update entry, only when there is something to show */
+    st->r_title_update = (cui_rect){ 0, 0, 0, 0 };
+    if (st->upd.state == UPD_AVAILABLE || st->upd.state == UPD_READY ||
+        st->upd.state == UPD_DOWNLOADING) {
+        ib.x = rx - UI_ICONBTN_SM;
+        st->r_title_update = ib;
+        cui_vec2 m = cui_mouse_pos(ui);
+        int s = ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
+        ui_iconbtn_draw(ui, ib, CUI_ICON_DOWNLOAD, s, false);
+        if (st->upd.state != UPD_DOWNLOADING)
+            cui_draw_circle(ui, (cui_vec2){ ib.x + ib.w - 5.0f, ib.y + 5.0f }, 3.0f,
+                            cui_token_color(ui, CUI_TOKEN_ACCENT));
+        ZONE(ib); rx = ib.x - UI_S4;
+    }
+
+    /* device pill: dot + name, warning tint when the engine fell back */
+    {
+        const char *name = st->device[0] ? st->device : "引擎";
+        cui_text_metrics dm = cui_measure_text(ui, CUI_FONT_BODY, UI_FS_CAPTION, name, -1);
+        float pw = dm.width + 30.0f;
+        cui_rect dp = { rx - pw - UI_S4, cy - 12.0f, pw, 24.0f };
+        cui_vec2 m = cui_mouse_pos(ui);
+        bool hot = ui_hit(dp, m);
+        cui_draw_rect_border(ui, dp, CUI_CORNERS(UI_R_FULL),
+                             hot ? fl_hover(ui) : fl_card_bg(ui), fl_border(ui), 1.0f);
+        bool warn = st->device_note[0] != 0;
+        cui_color dot = st->engine_ready ? (warn ? cui_token_color(ui, CUI_TOKEN_WARNING)
+                                               : cui_token_color(ui, CUI_TOKEN_SUCCESS))
+                                         : cui_token_color(ui, CUI_TOKEN_DANGER);
+        cui_draw_circle(ui, (cui_vec2){ dp.x + 12.0f, cy }, 4.0f, dot);
+        cui_draw_text(ui, CUI_FONT_BODY, UI_FS_CAPTION,
+                      (cui_vec2){ dp.x + 21.0f, cy - dm.height * 0.5f },
+                      hot ? text1(ui) : fl_text2(ui), name, -1);
+        if (warn)
+            cui_draw_icon(ui, CUI_ICON_TRIANGLE_ALERT,
+                          (cui_rect){ dp.x + dp.w - 8.0f, cy - 5.0f, 11, 11 }, 11.0f,
+                          cui_token_color(ui, CUI_TOKEN_WARNING));
+        st->r_title_device = dp;
+        ZONE(dp);
+    }
+
+    chrome_set_zones(zones, zn);
+#undef ZONE
+}
+
+void ui_titlebar(cui_ctx *ui, app_state *st) {
+    title_ctx tc = { st };
+    cui_canvas(ui, "titlebar", CUI_FILL, CUI_PX(UI_TITLEBAR), titlebar_paint, &tc, sizeof tc);
+}
+
+/* Reads last frame's title-bar hit rects; runs before the stage's own input
+ * so a click on chrome never reaches the canvas. */
+void ui_titlebar_input(app_state *st) {
+    cui_ctx *ui = st->ui;
+    cui_vec2 m = cui_mouse_pos(ui);
+    if (!tb_pressed(ui)) return;
+    if (ui_hit(st->r_close, m)) { chrome_close(); return; }
+    if (ui_hit(st->r_max, m)) { chrome_toggle_maximize(); return; }
+    if (ui_hit(st->r_min, m)) { chrome_minimize(); return; }
+    if (ui_hit(st->r_title_settings, m)) { st->show_settings = true; return; }
+    if (ui_hit(st->r_title_help, m)) { st->show_help = true; return; }
+    if (ui_hit(st->r_title_update, m)) { st->show_update = true; return; }
+    if (ui_hit(st->r_title_device, m)) {
+        /* the device pill explains itself in the settings sheet; a note that
+         * only shows on hover would hide the GPU->CPU fallback from the user */
+        st->show_settings = true;
+        return;
+    }
+    if (ui_hit(st->r_title_name, m)) {
+        job *j = job_selected(st);
+        if (j) app_reveal_in_explorer(j->path);
+        return;
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Settings sheet                                                            */
 /* ------------------------------------------------------------------------ */
 
-void ui_topbar(cui_ctx *ui, app_state *st) {
-    /* chrome.c hands only the rightmost UI_CAPTION_BUTTONS to the UI (that
-     * strip is HTCLIENT, everything left of it drags the window), so the title
-     * bar controls must fit: eight 30pt icon buttons, one hairline and seven
-     * UI_GAP gaps. */
-    _Static_assert(8 * UI_CONTROL_H + 7 * UI_GAP + 1.0f <= UI_CAPTION_BUTTONS,
-                   "title bar controls overflow the caption no-drag zone");
+static void set_theme_mode(cui_ctx *ui, app_state *st, int mode) {
+    st->set.theme_mode = mode;
+    if (mode == 0) {
+        cui_app_follow_system_theme(NULL, true);
+    } else {
+        cui_app_follow_system_theme(NULL, false);
+        cui_set_theme(ui, mode == 1 ? CUI_THEME_LIGHT : CUI_THEME_DARK);
+    }
+    chrome_set_dark(cui_get_theme_mode(ui) == CUI_THEME_DARK);
+    cfg_save(&st->set);
+}
 
-    cui_row(ui, .width = CUI_FILL, .height = CUI_PX(UI_TOPBAR), .pad_x = UI_PAD, .gap = UI_GAP,
-            .align = CUI_ALIGN_CENTER, .bg = CUI_COLOR_SURFACE) {
-        cui_icon(ui, CUI_ICON_SPARKLES, UI_ICON_LG, CUI_COLOR_ACCENT);
-        cui_text(ui, APP_TITLE, .font = CUI_FONT_DISPLAY, .size = UI_FS_BRAND, .nowrap = true);
-        cui_badge(ui, st->device, .size = CUI_SIZE_SM, .dot = true,
-                  .tone = st->engine_ready ? CUI_TONE_SUCCESS : CUI_TONE_DANGER);
-        cui_spacer(ui);
+static void ui_model_row(cui_ctx *ui, app_state *st, eng_model m, const char *label) {
+    eng_model_state ms;
+    memset(&ms, 0, sizeof ms);
+    bool known = dn_model_status(m, &ms);
+    cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+        cui_column(ui, .width = CUI_FILL, .gap = 2) {
+            cui_text(ui, label, .font = CUI_FONT_MEDIUM, .size = 12);
+            if (known && ms.available)
+                cui_text(ui, "已就绪", .size = UI_FS_CAPTION, .color = CUI_COLOR_SUCCESS);
+            else if (st->dl_busy[m])
+                cui_text(ui, "正在下载...", .size = UI_FS_CAPTION, .color = CUI_COLOR_ACCENT);
+            else
+                cui_text(ui, "未下载（可选，换用更强的模型）", .size = UI_FS_CAPTION,
+                         .color = CUI_COLOR_TEXT_MUTED);
+        }
+        if (st->dl_busy[m]) {
+            float t = st->dl_total[m] ? (float)st->dl_done[m] / (float)st->dl_total[m] : 0.0f;
+            cui_progress(ui, t, .width = CUI_PX(72), .height = 4);
+        } else if (!known || !ms.available) {
+            if (cui_button(ui, "下载", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
+                           .icon = CUI_ICON_DOWNLOAD, .disabled = st->bench)) {
+                st->dl_busy[m] = true;
+                st->dl_done[m] = st->dl_total[m] = 0;
+                dn_download_model(m);
+            }
+        }
+    }
+}
 
-        cui_row(ui, .height = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-            if (st->upd.state == UPD_AVAILABLE || st->upd.state == UPD_READY) {
-                char tip[64];
-                if (st->upd.state == UPD_READY) snprintf(tip, sizeof tip, "重启以更新");
-                else snprintf(tip, sizeof tip, "更新到 %s", st->upd.latest);
-                if (cui_icon_button(ui, CUI_ICON_DOWNLOAD, .size = CUI_SIZE_SM,
-                                    .variant = CUI_BUTTON_GHOST, .color = CUI_COLOR_ACCENT,
-                                    .tooltip = tip)) {
-                    st->show_update = true;
+static void ui_settings_sheet(cui_ctx *ui, app_state *st) {
+    if (!st->show_settings) return;
+    bool open = true;
+    cui_sheet(ui, "设置", &open, .side = CUI_SIDE_RIGHT, .size = UI_SHEET_W) {
+        cui_column(ui, .width = CUI_FILL, .gap = 14) {
+            /* 外观 */
+            cui_text(ui, "外观", .font = CUI_FONT_MEDIUM, .size = 12.5f);
+            {
+                static const char *themes[3] = { "跟随系统", "浅色", "深色" };
+                int mode = st->set.theme_mode;
+                if (cui_segmented(ui, "theme", themes, 3, &mode, .full_width = true,
+                                  .size = CUI_SIZE_SM))
+                    set_theme_mode(ui, st, mode);
+            }
+
+            cui_separator(ui);
+            /* 输出文件夹 */
+            cui_text(ui, "输出文件夹", .font = CUI_FONT_MEDIUM, .size = 12.5f);
+            cui_text(ui, st->set.output_dir[0] ? st->set.output_dir : cfg_default_out_dir(),
+                     .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_SECONDARY);
+            cui_row(ui, .width = CUI_FILL, .gap = 8) {
+                if (cui_button(ui, "更改", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
+                               .icon = CUI_ICON_FOLDER)) {
+                    char path[PATH_CAP];
+                    if (cui_app_file_dialog(NULL, &(cui_file_dialog_opts){
+                            .kind = CUI_FILE_FOLDER, .title = "选择输出目录" }, path, sizeof path)) {
+                        str_copy(st->set.output_dir, sizeof st->set.output_dir, path);
+                        cfg_save(&st->set);
+                    }
+                }
+                if (cui_button(ui, "打开", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM)) {
+                    cui_app_open_url(st->set.output_dir[0] ? st->set.output_dir
+                                                         : cfg_default_out_dir());
                 }
             }
 
-            if (cui_icon_button(ui, CUI_ICON_CIRCLE_HELP, .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST,
-                                .tooltip = "帮助与快捷键（?）", .shortcut = "?")) {
-                st->show_help = true;
+            cui_separator(ui);
+            /* 推理设备 */
+            cui_text(ui, "推理设备", .font = CUI_FONT_MEDIUM, .size = 12.5f);
+            cui_text(ui, st->device, .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_SECONDARY);
+            if (st->device_note[0])
+                cui_text(ui, st->device_note, .size = UI_FS_CAPTION, .color = CUI_COLOR_WARNING);
+            {
+                static const char *devs[3] = { "自动", "GPU", "CPU" };
+                int d = st->set.device;
+                if (cui_segmented(ui, "device", devs, 3, &d, .full_width = true,
+                                  .size = CUI_SIZE_SM) && st->set.device != d) {
+                    st->set.device = d;
+                    cfg_save(&st->set);
+                    st->want_restart = true;
+                }
             }
-            if (cui_icon_button(ui, CUI_ICON_SETTINGS, .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST,
-                                .tooltip = "设置")) {
-                st->show_settings = true;
+            if (st->engine_error[0])
+                cui_text(ui, st->engine_error, .size = UI_FS_CAPTION, .color = CUI_COLOR_DANGER);
+            cui_row(ui, .width = CUI_FILL, .gap = 8) {
+                if (cui_button(ui, "重启引擎", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
+                               .icon = CUI_ICON_REFRESH_CW))
+                    st->want_restart = true;
+                if (cui_button(ui, "模型目录", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
+                               .icon = CUI_ICON_FOLDER_OPEN))
+                    cui_app_open_url(dn_models_dir());
             }
-            if (cui_icon_button(ui, cui_get_theme_mode(ui) == CUI_THEME_DARK ? CUI_ICON_MOON : CUI_ICON_SUN,
-                                .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST,
-                                .tooltip = "切换浅色 / 深色")) {
-                int mode = st->set.theme_mode;
-                mode = (mode + 1) % 3;
-                st->set.theme_mode = mode;
-                if (mode == 0) { cui_app_follow_system_theme(NULL, true); }
-                else { cui_app_follow_system_theme(NULL, false); cui_set_theme(ui, mode == 1 ? CUI_THEME_LIGHT : CUI_THEME_DARK); }
-                /* the DWM caption/border follows the app theme too */
-                chrome_set_dark(cui_get_theme_mode(ui) == CUI_THEME_DARK);
+
+            cui_separator(ui);
+            /* 模型管理 */
+            cui_text(ui, "模型管理", .font = CUI_FONT_MEDIUM, .size = 12.5f);
+            ui_model_row(ui, st, ENG_M_CUGAN, "CUGAN");
+            ui_model_row(ui, st, ENG_M_APISR, "APISR");
+
+            cui_separator(ui);
+            /* 更新与维护 */
+            cui_text(ui, "更新与维护", .font = CUI_FONT_MEDIUM, .size = 12.5f);
+            if (cui_switch(ui, "启动时自动检查更新", &st->auto_update)) {
+                st->set.auto_check_updates = st->auto_update ? 1 : 0;
                 cfg_save(&st->set);
             }
+            cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                const char *state_text = "未检查";
+                switch (st->upd.state) {
+                case UPD_CHECKING:    state_text = "正在检查..."; break;
+                case UPD_UP_TO_DATE:  state_text = "已是最新"; break;
+                case UPD_AVAILABLE:   state_text = "有新版本"; break;
+                case UPD_DOWNLOADING: state_text = "正在下载..."; break;
+                case UPD_READY:       state_text = "更新已就绪"; break;
+                case UPD_FAILED:      state_text = "检查失败"; break;
+                default: break;
+                }
+                cui_text(ui, state_text, .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_SECONDARY);
+                cui_spacer(ui);
+                if (cui_button(ui, "检查更新", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM))
+                    upd_check(true);
+            }
+            cui_row(ui, .width = CUI_FILL, .gap = 8) {
+                if (cui_button(ui, "打开日志", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
+                               .icon = CUI_ICON_FILE_TEXT))
+                    cui_app_open_url(cfg_log_dir());
+                if (cui_button(ui, "导出诊断包", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
+                               .icon = CUI_ICON_BUG)) {
+                    char out[PATH_CAP];
+                    if (log_export_diagnostics(out, sizeof out)) {
+                        toast(st, "诊断包已生成");
+                        cui_app_open_url(out);
+                    } else {
+                        toast(st, "诊断包生成失败");
+                    }
+                }
+            }
+            cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                cui_text(ui, "版本 " APP_VERSION, .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_MUTED);
+                cui_spacer(ui);
+                if (cui_button(ui, "关于", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
+                               .icon = CUI_ICON_INFO))
+                    st->show_about = true;
+            }
+
             cui_separator(ui);
-            if (cui_icon_button(ui, CUI_ICON_MINUS, .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST,
-                                .tooltip = "最小化")) {
-                chrome_minimize();
-            }
-            if (cui_icon_button(ui, chrome_is_maximized() ? ICON_MINIMIZE : ICON_MAXIMIZE,
-                                .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST,
-                                .tooltip = chrome_is_maximized() ? "还原" : "最大化")) {
-                chrome_toggle_maximize();
-            }
-            if (cui_icon_button(ui, CUI_ICON_X, .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST,
-                                .tooltip = "关闭（Ctrl+Q）", .shortcut = "Ctrl Q")) {
-                chrome_close();
+            if (cui_button(ui, "恢复默认设置", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
+                           .icon = CUI_ICON_ROTATE_CCW)) {
+                app_settings d;
+                cfg_defaults(&d);
+                st->set.theme_mode = d.theme_mode;
+                st->set.device = d.device;
+                st->set.output_dir[0] = 0;
+                st->set.auto_check_updates = d.auto_check_updates;
+                st->preset = DEFAULT_PRESET;
+                st->down_pct = PRESETS[DEFAULT_PRESET].down_pct;
+                st->l0 = PRESETS[DEFAULT_PRESET].l0;
+                st->brush_size = d.brush_size;
+                st->brush_mix = d.brush_mix;
+                st->feather_px = d.feather_px;
+                set_theme_mode(ui, st, st->set.theme_mode);
+                cfg_save(&st->set);
+                st->want_restart = true;
             }
         }
     }
+    st->show_settings = open;
 }
 
 /* ------------------------------------------------------------------------ */
-/* Header row: file name, status, actions                                   */
-/* ------------------------------------------------------------------------ */
-
-void ui_job_header(cui_ctx *ui, app_state *st, job *j) {
-    cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER, .height = CUI_PX(UI_HEAD)) {
-        cui_text(ui, j->name, .font = CUI_FONT_MEDIUM, .size = UI_FS_TITLE, .nowrap = true);
-        cui_badge(ui, status_label(j->status), .tone = status_tone(j->status), .size = CUI_SIZE_SM,
-                  .dot = j->status == JOB_RUNNING);
-        if (j->mask_active) cui_badge(ui, "局部保护", .size = CUI_SIZE_SM, .tone = CUI_TONE_WARNING,
-                                      .icon = CUI_ICON_SHIELD);
-        cui_spacer(ui);
-
-        if (j->status == JOB_RUNNING && !j->cancel_sent) {
-            if (cui_button(ui, "取消", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
-                           .icon = CUI_ICON_X)) {
-                j->cancel_sent = true;
-                dn_cancel(j->id);
-            }
-        }
-        if (j->status == JOB_DONE) {
-            bool stale = j->down_pct != j->res_down_pct || fabsf(j->l0 - j->res_l0) > 1e-6f;
-            if (stale) {
-                if (cui_button(ui, "用新参数重新去噪", .variant = CUI_BUTTON_PRIMARY, .size = CUI_SIZE_SM,
-                               .icon = CUI_ICON_REFRESH_CW)) {
-                    j->status = JOB_QUEUED;
-                    engine_submit_next(st);
-                }
-            }
-            if (cui_button(ui, "保存", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
-                           .icon = CUI_ICON_DOWNLOAD, .shortcut = "Ctrl S")) {
-                st->want_save = true;
-            }
-            if (cui_button(ui, "打开文件夹", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
-                           .icon = CUI_ICON_FOLDER_OPEN)) {
-                cui_app_open_url(st->set.output_dir[0] ? st->set.output_dir : cfg_default_out_dir());
-            }
-        }
-    }
-}
-
-/* ------------------------------------------------------------------------ */
-/* Sidebar                                                                  */
-/* ------------------------------------------------------------------------ */
-
-static void ui_queue_row(cui_ctx *ui, app_state *st, int index) {
-    job *j = &st->jobs[index];
-    bool selected = st->selected == index;
-    bool cancel = false;
-
-    char card_id[48];
-    snprintf(card_id, sizeof card_id, "job_row_%d", index);
-    char params[96];
-    {
-        char l0[16];
-        fmt_l0(j->l0, l0, sizeof l0);
-        snprintf(params, sizeof params, "预缩 %d%% · L0 %s", j->down_pct, l0);
-    }
-
-    cui_push_id_int(ui, index);
-    cui_card_opts co;
-    memset(&co, 0, sizeof co);
-    co.id = card_id;
-    co.dir = CUI_ROW;
-    co.align = CUI_ALIGN_CENTER;
-    co.gap = UI_GAP;
-    co.pad = 7;                 /* card padding, docs/design.md §4.4 (no token) */
-    co.width = CUI_FILL;
-    co.hoverable = true;
-    co.muted = selected;   /* selection reads as a surface change, not a red frame */
-    bool clicked = cui_card_begin(ui, &co);
-
-    /* 40pt list thumb: no token covers it; UI_TILE is the strip/big tile */
-    if (j->thumb_tex) {
-        cui_image(ui, j->thumb_tex, .width = CUI_PX(40), .height = CUI_PX(40), .radius = UI_R_CONTROL);
-    } else {
-        cui_box(ui, .width = CUI_PX(40), .height = CUI_PX(40), .radius = UI_R_CONTROL,
-                .bg = CUI_COLOR_SURFACE_MUTED,
-                .align = CUI_ALIGN_CENTER, .justify = CUI_JUSTIFY_CENTER) {
-            cui_icon(ui, CUI_ICON_IMAGE, UI_ICON_MD, CUI_COLOR_TEXT_MUTED);
-        }
-    }
-    cui_column(ui, .width = CUI_FILL, .gap = 1) {
-        cui_text(ui, j->name, .font = CUI_FONT_MEDIUM, .size = UI_FS_BODY, .nowrap = true);
-        cui_text(ui, params, .size = UI_FS_CAPTION, .nowrap = true, .color = CUI_COLOR_TEXT_MUTED);
-    }
-    if (j->status == JOB_RUNNING && !j->cancel_sent) {
-        if (cui_icon_button(ui, CUI_ICON_X, .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST,
-                            .tooltip = "取消这张图")) {
-            cancel = true;
-        }
-    } else {
-        cui_badge(ui, status_label(j->status), .tone = status_tone(j->status), .size = CUI_SIZE_SM,
-                  .dot = j->status == JOB_RUNNING);
-    }
-    st->r_queue[index] = cui_last_rect(ui);
-    cui_card_end(ui);
-    cui_pop_id(ui);
-
-    if (cancel && j->status == JOB_RUNNING) {
-        j->cancel_sent = true;
-        dn_cancel(j->id);
-    } else if (clicked && !selected) {
-        job_focus(st, index);
-    }
-}
-
-/* Slider row: label left, value right, neutral track; the accent appears only
- * while the handle is under the pointer. CUI's own slider paints the fill in
- * the accent colour, which turned the whole sidebar red. */
-typedef struct slider_ctx {
-    float *value;
-    float lo, hi, step;
-    const char *fmt;
-    bool dragging;
-} slider_ctx;
-
-static void slider_paint(cui_ctx *ui, cui_rect r, void *user) {
-    slider_ctx *sc = (slider_ctx *)user;
-    float t = (*sc->value - sc->lo) / (sc->hi - sc->lo);
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
-    const float inset = 6.0f, track_h = 4.0f;
-    float x0 = r.x + inset, x1 = r.x + r.w - inset;
-    float y = r.y + (r.h - track_h) * 0.5f;
-    cui_draw_rect(ui, (cui_rect){ x0, y, x1 - x0, track_h }, CUI_CORNERS(2.0f), CUI_COLOR_BORDER);
-    float handle_x = x0 + (x1 - x0) * t;
-    cui_draw_rect(ui, (cui_rect){ x0, y, handle_x - x0, track_h }, CUI_CORNERS(2.0f),
-                  CUI_COLOR_BORDER_STRONG);
-    bool hot = cui_mouse_pos(ui).x >= r.x && cui_mouse_pos(ui).x <= r.x + r.w &&
-               cui_mouse_pos(ui).y >= r.y && cui_mouse_pos(ui).y <= r.y + r.h;
-    cui_draw_circle(ui, (cui_vec2){ handle_x, r.y + r.h * 0.5f }, 6.0f,
-                    (hot || sc->dragging) ? CUI_COLOR_ACCENT : CUI_COLOR_FOREGROUND);
-    cui_draw_circle(ui, (cui_vec2){ handle_x, r.y + r.h * 0.5f }, 4.5f, CUI_COLOR_SURFACE);
-}
-
-static bool ui_slider_row(cui_ctx *ui, const char *id, const char *label, float *value,
-                          float lo, float hi, float step, const char *fmt) {
-    bool changed = false;
-    char text[32];
-    snprintf(text, sizeof text, fmt ? fmt : "%.0f", *value);
-    cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-        cui_text(ui, label, .size = UI_FS_BODY, .color = CUI_COLOR_TEXT_SECONDARY, .nowrap = true);
-        cui_spacer(ui);
-        cui_text(ui, text, .size = UI_FS_BODY, .tabular = true, .nowrap = true);
-    }
-
-    static const char *drag_id;   /* which slider owns the drag */
-    slider_ctx sc = { value, lo, hi, step, fmt, drag_id == id };
-    cui_canvas_result cr = cui_canvas(ui, id, CUI_FILL, CUI_PX(22), slider_paint, &sc, sizeof sc);
-    if (cr.pressed && !drag_id) drag_id = id;
-    if (!cui_mouse_down(ui, CUI_MOUSE_LEFT) && drag_id == id) drag_id = NULL;
-    if (drag_id == id && cr.rect.w > 1.0f) {
-        float t = (cui_mouse_pos(ui).x - (cr.rect.x + 6.0f)) / (cr.rect.w - 12.0f);
-        if (t < 0.0f) t = 0.0f;
-        if (t > 1.0f) t = 1.0f;
-        float v = lo + (hi - lo) * t;
-        if (step > 0.0f) v = lo + floorf((v - lo) / step + 0.5f) * step;
-        if (v < lo) v = lo;
-        if (v > hi) v = hi;
-        if (fabsf(v - *value) > 1e-6f) { *value = v; changed = true; }
-    }
-    return changed;
-}
-
-void ui_sidebar(cui_ctx *ui, app_state *st) {
-    /* Two segments, not three stacked groups: parameters grow with their content
-     * and stop where it ends; the queue is a result list, so it keeps a fixed
-     * share of the pane and carries its own surface and hairline. Groups sit
-     * UI_GAP apart, their own rows UI_GAP_SM apart. */
-    cui_column(ui, .width = CUI_PX(UI_SIDEBAR), .height = CUI_FILL, .bg = CUI_COLOR_SURFACE_MUTED,
-               .pad = UI_PANE_PAD, .gap = UI_GAP) {
-        /* --- segment 1: parameters (content height) --- */
-        /* --- strength --- */
-        cui_column(ui, .width = CUI_FILL, .gap = UI_GAP_SM) {
-            cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-                cui_text(ui, "去噪强度", .font = CUI_FONT_MEDIUM, .size = UI_FS_LABEL,
-                         .color = CUI_COLOR_TEXT_SECONDARY);
-                cui_spacer(ui);
-                if (st->preset == PRESET_CUSTOM)
-                    cui_badge(ui, "自定义", .size = CUI_SIZE_SM, .tone = CUI_TONE_WARNING);
-            }
-            static const char *names[3] = { "轻柔", "推荐", "强力" };
-            int seg = st->preset <= 2 ? st->preset : 0;
-            bool hit_preset = cui_segmented(ui, "preset", names, 3, &seg, .full_width = true, .size = CUI_SIZE_SM);
-            st->r_preset = cui_last_rect(ui);
-            if (hit_preset) {
-                apply_preset(st, seg);
-                settings_from_state(st);
-            }
-            cui_text(ui, st->preset <= 2 ? PRESETS[st->preset].hint : "自定义参数：下面两个滑块决定。",
-                     .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_MUTED);
-
-            int d0 = st->down_pct;
-            float l0_0 = st->l0;
-            float down_f = (float)st->down_pct;
-            if (ui_slider_row(ui, "s_down", "预缩比例", &down_f, 10.0f, 100.0f, 5.0f, "%.0f%%")) {
-                st->down_pct = (int)(down_f + 0.5f);
-            }
-            ui_slider_row(ui, "s_l0", "L0 平滑", &st->l0, 0.0f, 0.005f, 0.0001f, "%.4f");
-            if (st->down_pct != d0 || fabsf(st->l0 - l0_0) > 5e-5f) {
-                st->preset = preset_of(st->down_pct, st->l0);
-                settings_from_state(st);
-            }
-        }
-
-        cui_separator(ui);
-
-        /* --- brush --- */
-        cui_column(ui, .width = CUI_FILL, .gap = UI_GAP_SM) {
-            cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-                cui_text(ui, "局部保护", .font = CUI_FONT_MEDIUM, .size = UI_FS_LABEL,
-                         .color = CUI_COLOR_TEXT_SECONDARY);
-                cui_spacer(ui);
-                cui_text(ui, "B 笔刷 · E 橡皮 · L 套索", .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_MUTED);
-            }
-            /* brush rows only matter while a paint tool is on */
-            if (st->tool == TOOL_VIEW) {
-                cui_text(ui, "在画布工具行选择笔刷 / 橡皮 / 套索后可用。", .size = UI_FS_CAPTION,
-                         .color = CUI_COLOR_TEXT_MUTED);
-            } else {
-            float s0 = st->brush_size, m0 = st->brush_mix, f0 = st->feather_px;
-            ui_slider_row(ui, "s_brush", "笔刷大小", &st->brush_size, 2.0f, 300.0f, 1.0f, "%.0f px");
-            ui_slider_row(ui, "s_mix", "恢复强度", &st->brush_mix, 0.0f, 100.0f, 5.0f, "%.0f%%");
-            if (fabsf(st->brush_size - s0) > 0.01f || fabsf(st->brush_mix - m0) > 0.01f)
-                settings_from_state(st);
-            if (ui_slider_row(ui, "s_feather", "柔边", &st->feather_px, 0.0f, 150.0f, 2.0f, "%.0f px")) {
-                job *j = job_selected(st);
-                if (j) {
-                    j->feather_px = (int)(st->feather_px + 0.5f);
-                    j->mask_tex_dirty = true;
-                    j->composite_pending = true;
-                }
-            }
-            if (fabsf(st->feather_px - f0) > 0.01f) settings_from_state(st);
-            }
-        }
-
-        /* the parameter block ends here; the spacer absorbs what the queue
-         * segment does not take, so the queue stays docked to the pane's bottom */
-        cui_spacer(ui);
-
-        /* --- segment 2: queue (fixed share, own surface) --- */
-        cui_column(ui, .id = "sidebar_queue", .width = CUI_FILL,
-                   .height = CUI_PCT(UI_QUEUE_PCT), .bg = CUI_COLOR_SURFACE, .gap = 0) {
-            cui_separator(ui);   /* the segment's top hairline */
-            cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = UI_PANE_PAD,
-                       .gap = UI_GAP_SM) {
-                char count[48];
-                snprintf(count, sizeof count, "%d", st->count);
-                cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-                    cui_text(ui, "队列", .font = CUI_FONT_MEDIUM, .size = UI_FS_LABEL,
-                             .color = CUI_COLOR_TEXT_SECONDARY);
-                    cui_spacer(ui);
-                    cui_badge(ui, count, .size = CUI_SIZE_SM);
-                }
-                if (st->count == 0) {
-                    cui_text(ui, "还没有图片。拖入、粘贴或点下面的按钮添加。", .size = UI_FS_CAPTION,
-                             .color = CUI_COLOR_TEXT_MUTED);
-                } else {
-                    /* cards lift 2pt on hover and cast a raised shadow; UI_GAP is the
-                     * clearance docs/design.md §4.4 asks the scroll area to keep, so the
-                     * lift is never cut off by the scroll clip (cui_card_opts has no clip). */
-                    cui_scroll(ui, .id = "queue", .height = CUI_FILL, .gap = UI_GAP, .pad = UI_GAP,
-                               .fade_edges = true) {
-                        for (int i = 0; i < st->count; i++) ui_queue_row(ui, st, i);
-                    }
-                }
-
-                cui_row(ui, .width = CUI_FILL, .gap = UI_GAP) {
-                    if (cui_button(ui, "添加图片", .variant = CUI_BUTTON_PRIMARY, .icon = CUI_ICON_PLUS,
-                                   .shortcut = "Ctrl O")) {
-                        st->want_browse = true;
-                    }
-                    if (cui_icon_button(ui, CUI_ICON_CLIPBOARD, .variant = CUI_BUTTON_OUTLINE,
-                                        .tooltip = "粘贴剪贴板里的图片（Ctrl+V）")) {
-                        st->want_paste = true;
-                    }
-                }
-                if (cui_button(ui, "清空已完成", .variant = CUI_BUTTON_GHOST, .full_width = true,
-                               .icon = CUI_ICON_TRASH_2, .disabled = st->count == 0)) {
-                    st->want_clear = true;
-                }
-            }
-        }
-    }
-}
-
-/* ------------------------------------------------------------------------ */
-/* Thumbnail strip                                                          */
-/* ------------------------------------------------------------------------ */
-
-void ui_strip(cui_ctx *ui, app_state *st) {
-    /* the strip is its own surface: a hairline separates the file list from the
-     * canvas instead of both sitting on the same white */
-    cui_column(ui, .width = CUI_FILL, .height = CUI_PX(UI_STRIP), .bg = CUI_COLOR_SURFACE, .gap = 0) {
-        cui_separator(ui);
-        /* Every tile - thumbnail or "add" - is a child of one row, gets the same
-         * CUI_PX(UI_TILE) box and starts at the same edge, so their frames (and
-         * their top edge) are identical by construction, whatever the contents. */
-        cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .pad_x = UI_GAP,
-                .pad_y = (UI_STRIP - UI_TILE - UI_HAIRLINE) * 0.5f, .gap = UI_GAP,
-                .align = CUI_ALIGN_START) {
-            cui_scroll(ui, .id = "strip", .width = CUI_FILL, .height = CUI_PX(UI_TILE),
-                       .horizontal = true, .gap = UI_GAP) {
-                /* the scroll container stacks children vertically, so the tiles
-                 * need an explicit row inside it; that row is top-aligned in the
-                 * viewport, which is exactly UI_TILE tall */
-                cui_row(ui, .width = CUI_FIT, .height = CUI_PX(UI_TILE), .gap = UI_GAP,
-                        .align = CUI_ALIGN_START) {
-                    for (int i = 0; i < st->count; i++) {
-                        job *j = &st->jobs[i];
-                        cui_push_id_int(ui, 9000 + i);
-                        tile_ctx tc = { .tex = j->thumb_tex, .is_add = false, .selected = st->selected == i };
-                        char cid[32];
-                        snprintf(cid, sizeof cid, "thumb_%d", i);
-                        cui_canvas_result cr = cui_canvas(ui, cid, CUI_PX(UI_TILE), CUI_PX(UI_TILE),
-                                                          tile_paint, &tc, sizeof tc);
-                        if (cr.clicked && st->selected != i) job_focus(st, i);
-                        cui_pop_id(ui);
-                    }
-                    /* the "add" tile is the same box as a thumbnail, only its contents differ */
-                    tile_ctx add = { .tex = 0, .is_add = true, .selected = false };
-                    if (cui_canvas(ui, "strip_add", CUI_PX(UI_TILE), CUI_PX(UI_TILE),
-                                   tile_paint, &add, sizeof add).clicked) {
-                        st->want_browse = true;
-                    }
-                    cui_tooltip(ui, "添加图片（Ctrl+O）");
-                }
-            }
-        }
-    }
-}
-
-/* ------------------------------------------------------------------------ */
-/* Status line                                                              */
-/* ------------------------------------------------------------------------ */
-
-void ui_status(cui_ctx *ui, app_state *st, job *j) {
-    (void)st;
-    cui_column(ui, .width = CUI_FILL, .gap = UI_GAP_SM) {
-        if (j && j->status == JOB_RUNNING) {
-            cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-                cui_progress(ui, j->progress, .width = CUI_FILL, .height = 4, .tone = CUI_TONE_ACCENT);
-                char pct[16];
-                snprintf(pct, sizeof pct, "%d%%", (int)(j->progress * 100.0f + 0.5f));
-                cui_text(ui, j->cancel_sent ? "正在取消..." : pct, .size = UI_FS_CAPTION, .nowrap = true,
-                         .tabular = true, .color = CUI_COLOR_TEXT_SECONDARY);
-            }
-        }
-
-        char left[192] = "";
-        if (j && j->status == JOB_DONE) {
-            char when[32], l0[16];
-            fmt_ms(j->ms, when, sizeof when);
-            fmt_l0(j->res_l0, l0, sizeof l0);
-            snprintf(left, sizeof left, "%d × %d · %s · 预缩 %d%% · L0 %s%s",
-                     j->orig.w, j->orig.h, when, j->res_down_pct, l0,
-                     j->sr_cached ? " · 复用超分" : "");
-        } else if (j && j->status == JOB_RUNNING) {
-            const char *phase = j->phase[0] ? j->phase : "处理中";
-            if (strcmp(phase, "upscale") == 0) phase = "超分辨率重建";
-            else if (strcmp(phase, "smooth") == 0) phase = "L0 平滑";
-            else if (strcmp(phase, "decode") == 0) phase = "解码";
-            else if (strcmp(phase, "prepare") == 0) phase = "准备模型";
-            else if (strcmp(phase, "compose") == 0) phase = "合成保护区域";
-            char l0[16];
-            fmt_l0(j->l0, l0, sizeof l0);
-            snprintf(left, sizeof left, "%s · 预缩 %d%% · L0 %s", phase, j->down_pct, l0);
-        } else if (j && j->status == JOB_ERROR) {
-            snprintf(left, sizeof left, "%s", j->error[0] ? j->error : "处理失败。");
-        }
-
-        cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-            if (left[0]) {
-                cui_text(ui, left, .size = UI_FS_CAPTION, .nowrap = true, .tabular = true,
-                         .color = j && j->status == JOB_ERROR ? CUI_COLOR_DANGER : CUI_COLOR_TEXT_SECONDARY);
-                cui_spacer(ui);
-            }
-            const char *shown = j && j->status == JOB_DONE
-                                    ? (j->mask_active ? j->out_protected : j->out)
-                                    : (j ? j->path : "");
-            cui_text(ui, shown, .size = UI_FS_CAPTION, .nowrap = true, .color = CUI_COLOR_TEXT_MUTED);
-        }
-    }
-}
-
-/* ------------------------------------------------------------------------ */
-/* Dialogs                                                                  */
+/* Dialogs                                                                   */
 /* ------------------------------------------------------------------------ */
 
 static void shortcut_row(cui_ctx *ui, const char *keys, const char *what) {
@@ -531,137 +406,28 @@ static void ui_help_dialog(cui_ctx *ui, app_state *st) {
     bool open = true;
     cui_dialog(ui, "帮助与快捷键", &open, .width = 560) {
         cui_column(ui, .width = CUI_FILL, .gap = 6) {
-            shortcut_row(ui, "Ctrl O", "添加图片");
-            shortcut_row(ui, "Ctrl V", "粘贴剪贴板里的图片");
+            shortcut_row(ui, "Ctrl O / Ctrl V", "添加图片 / 粘贴剪贴板");
             shortcut_row(ui, "Ctrl S", "另存为");
-            shortcut_row(ui, "Ctrl Enter", "用当前参数重新去噪");
             shortcut_row(ui, "Ctrl Z / Ctrl Shift Z", "撤销 / 重做笔刷");
-            shortcut_row(ui, "1 / 2 / 3", "对比 / 原图 / 结果");
-            shortcut_row(ui, "B / E / L", "笔刷 / 橡皮 / 套索");
-            shortcut_row(ui, "左侧右键拖动", "临时当橡皮擦");
-            shortcut_row(ui, "按住 Z", "临时查看原图");
-            shortcut_row(ui, "按住 M", "临时查看保护区域");
-            shortcut_row(ui, "F / 0", "适合窗口 / 1:1");
+            shortcut_row(ui, "1 / 2 / 3 或 X", "对比 / 原图 / 结果，X 互切");
+            shortcut_row(ui, "按住 Z / 按住 M", "查看原图 / 查看保护区");
+            shortcut_row(ui, "B / E / L", "画笔 / 橡皮 / 磁性套索（再按退出）");
+            shortcut_row(ui, "I", "反选保护区");
+            shortcut_row(ui, "[ ] 或空格+滚轮", "调整笔刷大小");
+            shortcut_row(ui, "右键拖动", "临时当橡皮擦");
+            shortcut_row(ui, "空格或中键拖动", "平移画布");
+            shortcut_row(ui, "Enter / 双击 / 回起点", "闭合套索（Alt/右键=减选）");
+            shortcut_row(ui, "Backspace", "删除套索锚点");
+            shortcut_row(ui, "F / 0 / Ctrl +-", "适合窗口 / 1:1 / 缩放");
             shortcut_row(ui, "左右方向键", "上一张 / 下一张");
-            shortcut_row(ui, "Esc", "结束笔刷、取消套索");
+            shortcut_row(ui, "Esc", "放弃套索 → 退出保护 → 关浮层");
             cui_separator(ui);
-            cui_text(ui, "局部保护：笔刷涂过的地方恢复原图，柔边会自动过渡。"
-                         "套索可以沿着线稿圈出一块区域。",
+            cui_text(ui, "局部保护：画笔涂过的地方保留原图，柔边自动过渡；"
+                         "磁性套索沿线稿吸附。改预设或微调会立即重新去噪。",
                      .size = 11.5f, .color = CUI_COLOR_TEXT_SECONDARY);
         }
     }
     st->show_help = open;
-}
-
-static void ui_settings_dialog(cui_ctx *ui, app_state *st) {
-    if (!st->show_settings) return;
-    bool open = true;
-    cui_dialog(ui, "设置", &open, .width = 620) {
-        cui_column(ui, .width = CUI_FILL, .gap = 10) {
-            cui_text(ui, "输出目录", .font = CUI_FONT_MEDIUM, .size = 12.5f);
-            cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-                cui_text(ui, st->set.output_dir[0] ? st->set.output_dir : cfg_default_out_dir(),
-                         .size = 11.5f, .nowrap = true, .color = CUI_COLOR_TEXT_SECONDARY);
-                cui_spacer(ui);
-                if (cui_button(ui, "更改", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
-                               .icon = CUI_ICON_FOLDER)) {
-                    char path[PATH_CAP];
-                    if (cui_app_file_dialog(NULL, &(cui_file_dialog_opts){
-                            .kind = CUI_FILE_FOLDER, .title = "选择输出目录" }, path, sizeof path)) {
-                        str_copy(st->set.output_dir, sizeof st->set.output_dir, path);
-                        cfg_save(&st->set);
-                    }
-                }
-                if (cui_button(ui, "打开", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM)) {
-                    cui_app_open_url(st->set.output_dir[0] ? st->set.output_dir : cfg_default_out_dir());
-                }
-            }
-
-            cui_separator(ui);
-            cui_text(ui, "推理引擎", .font = CUI_FONT_MEDIUM, .size = 12.5f);
-            cui_text(ui, st->device, .size = 11.5f, .color = CUI_COLOR_TEXT_MUTED);
-            if (st->engine_error[0]) {
-                cui_text(ui, st->engine_error, .size = 11.5f, .color = CUI_COLOR_DANGER);
-            }
-            cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-                cui_text(ui, "设备", .size = 11.5f, .color = CUI_COLOR_TEXT_SECONDARY);
-                const char *dev_names[3] = { "自动", "GPU", "CPU" };
-                for (int d = 0; d < 3; d++) {
-                    bool on = st->set.device == d;
-                    if (cui_button(ui, dev_names[d],
-                                   .variant = on ? CUI_BUTTON_PRIMARY : CUI_BUTTON_OUTLINE,
-                                   .size = CUI_SIZE_SM)) {
-                        if (st->set.device != d) {
-                            st->set.device = d;
-                            cfg_save(&st->set);
-                            /* a device switch needs a clean engine: same
-                             * path as the retry button */
-                            st->want_restart = true;
-                        }
-                    }
-                }
-            }
-            cui_row(ui, .width = CUI_FILL, .gap = 8) {
-                if (cui_button(ui, "重启引擎", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
-                               .icon = CUI_ICON_REFRESH_CW)) {
-                    st->want_restart = true;
-                }
-                if (cui_button(ui, "打开模型目录", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
-                               .icon = CUI_ICON_FOLDER_OPEN)) {
-                    cui_app_open_url(dn_models_dir());
-                }
-                if (cui_button(ui, "打开日志", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
-                               .icon = CUI_ICON_FILE_TEXT)) {
-                    cui_app_open_url(cfg_log_dir());
-                }
-            }
-
-            cui_separator(ui);
-            cui_text(ui, "更新", .font = CUI_FONT_MEDIUM, .size = 12.5f);
-            cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-                const char *state_text = "未检查";
-                switch (st->upd.state) {
-                case UPD_CHECKING: state_text = "正在检查..."; break;
-                case UPD_UP_TO_DATE: state_text = "已是最新版本"; break;
-                case UPD_AVAILABLE: state_text = "有新版本"; break;
-                case UPD_DOWNLOADING: state_text = "正在下载..."; break;
-                case UPD_READY: state_text = "更新已就绪"; break;
-                case UPD_FAILED: state_text = "检查失败"; break;
-                default: break;
-                }
-                cui_text(ui, state_text, .size = 11.5f, .color = CUI_COLOR_TEXT_SECONDARY);
-                cui_text(ui, APP_VERSION, .size = 11.5f, .color = CUI_COLOR_TEXT_MUTED);
-                cui_spacer(ui);
-                if (cui_button(ui, "检查更新", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
-                               .icon = CUI_ICON_REFRESH_CW)) {
-                    upd_check(true);
-                }
-            }
-            if (cui_checkbox(ui, "启动时自动检查更新", &st->auto_update)) {
-                st->set.auto_check_updates = st->auto_update ? 1 : 0;
-                cfg_save(&st->set);
-            }
-
-            cui_separator(ui);
-            cui_row(ui, .width = CUI_FILL, .gap = 8) {
-                if (cui_button(ui, "导出诊断包", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
-                               .icon = CUI_ICON_BUG)) {
-                    char out[PATH_CAP];
-                    if (log_export_diagnostics(out, sizeof out)) {
-                        toast(st, "诊断包已生成");
-                        cui_app_open_url(out);
-                    } else {
-                        toast(st, "诊断包生成失败");
-                    }
-                }
-                if (cui_button(ui, "关于", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
-                               .icon = CUI_ICON_INFO)) {
-                    st->show_about = true;
-                }
-            }
-        }
-    }
-    st->show_settings = open;
 }
 
 static void ui_about_dialog(cui_ctx *ui, app_state *st) {
@@ -670,13 +436,13 @@ static void ui_about_dialog(cui_ctx *ui, app_state *st) {
     cui_dialog(ui, "关于 Anime Denoise", &open, .width = 520) {
         cui_column(ui, .width = CUI_FILL, .gap = 8) {
             cui_textf(ui, "版本 %s", APP_VERSION);
-            cui_text(ui, "去除 GPT 生图在二次元画风里留下的鱼鳞纹。所有推理都在本机完成。",
+            cui_text(ui, "去除 AI 生图在二次元画风里留下的鱼鳞纹。所有推理都在本机完成。",
                      .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
             cui_separator(ui);
             cui_text(ui, "去噪算法：gpt-anime-denoise（ESRGAN + L0 平滑）", .size = 11.5f);
             cui_text(ui, "界面：CUI (MIT)", .size = 11.5f);
             cui_text(ui, "图标：Lucide (ISC)", .size = 11.5f);
-            cui_text(ui, "字体：HarmonyOS Sans（华为设备有限公司授权）", .size = 11.5f);
+            cui_text(ui, "字体：HarmonyOS Sans（华为授权）", .size = 11.5f);
             cui_separator(ui);
             if (cui_button(ui, "查看许可证目录", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
                            .icon = CUI_ICON_FILE_TEXT)) {
@@ -720,9 +486,8 @@ static void ui_update_dialog(cui_ctx *ui, app_state *st) {
                 }
             } else if (st->upd.state == UPD_FAILED) {
                 cui_text(ui, st->upd.error[0] ? st->upd.error : "检查更新失败。", .color = CUI_COLOR_DANGER);
-                if (cui_button(ui, "重试", .variant = CUI_BUTTON_OUTLINE, .icon = CUI_ICON_REFRESH_CW)) {
+                if (cui_button(ui, "重试", .variant = CUI_BUTTON_OUTLINE, .icon = CUI_ICON_REFRESH_CW))
                     upd_check(true);
-                }
             } else {
                 cui_text(ui, "正在检查更新...", .size = 12);
             }
@@ -731,12 +496,10 @@ static void ui_update_dialog(cui_ctx *ui, app_state *st) {
     st->show_update = open;
 }
 
-/* ------------------------------------------------------------------------ */
-
-/* One call for every dialog the app can show. */
+/* One call for every second-layer surface the app can show. */
 void ui_dialogs(cui_ctx *ui, app_state *st) {
+    ui_settings_sheet(ui, st);
     ui_help_dialog(ui, st);
-    ui_settings_dialog(ui, st);
     ui_about_dialog(ui, st);
     ui_update_dialog(ui, st);
 }

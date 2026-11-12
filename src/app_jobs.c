@@ -24,6 +24,7 @@
 #include "img.h"
 #include "loader.h"
 #include "mask.h"
+#include "ui_fluent.h"
 
 
 /* ------------------------------------------------------------------------ */
@@ -63,6 +64,8 @@ static void thumb_crop_square(img_pixels *p) {
 static void job_drop_textures(cui_ctx *ui, job *j) {
     if (j->orig_tex) { cui_image_destroy(ui, j->orig_tex); j->orig_tex = 0; }
     if (j->res_tex) { cui_image_destroy(ui, j->res_tex); j->res_tex = 0; }
+    if (j->fade_tex) { cui_image_destroy(ui, j->fade_tex); j->fade_tex = 0; }
+    if (j->raw_tex) { cui_image_destroy(ui, j->raw_tex); j->raw_tex = 0; }
     if (j->mask_tex) { cui_image_destroy(ui, j->mask_tex); j->mask_tex = 0; }
 }
 
@@ -77,6 +80,30 @@ void job_free(cui_ctx *ui, job *j) {
     if (j->hist) { mask_hist_free(j->hist); j->hist = NULL; }
     /* the rest of the struct is rebuilt by the next job that lands here */
     memset(j, 0, sizeof *j);
+}
+
+/* Removes a job from the queue (the tray's hover ×). A running job is asked
+ * to cancel first; the stale CANCELLED event is ignored because the slot is
+ * reused -- freeing moves the struct's tail over it, so job_find cannot see
+ * the old id afterwards. */
+void job_remove(cui_ctx *ui, app_state *st, int index) {
+    if (index < 0 || index >= st->count) return;
+    job *j = &st->jobs[index];
+    if (j->status == JOB_RUNNING && j->id) dn_cancel(j->id);
+    job_free(ui, j);
+    if (index + 1 < st->count)
+        memmove(&st->jobs[index], &st->jobs[index + 1],
+                (size_t)(st->count - index - 1) * sizeof(job));
+    memset(&st->jobs[st->count - 1], 0, sizeof(job));
+    st->count--;
+
+    if (st->selected == index) {
+        st->selected = -1;
+        if (st->count > 0) job_focus(st, index < st->count ? index : st->count - 1);
+    } else if (st->selected > index) {
+        st->selected--;
+    }
+    engine_submit_next(st);
 }
 
 /* Stable identity for the denoiser's SR cache: the worker keyed it on the
@@ -375,6 +402,29 @@ void engine_submit_next(app_state *st) {
     }
 }
 
+/* Parameter edits re-run the selected job (spec §9: 改预设/微调即重跑，处理中
+ * 改参数立即中止旧任务). A running job is told to cancel and re-queued in the
+ * same breath: the denoiser serialises pushes behind the aborted one, so the
+ * replacement starts the moment the engine unwinds. The stale CANCELLED event
+ * is ignored because job_find keys on the id we just zeroed. Queued jobs take
+ * the new parameters too -- the pill's preset is a queue-level intent. */
+void job_rerun(app_state *st, job *j) {
+    if (!j || !j->orig.rgba) return;
+    for (int i = 0; i < st->count; i++) {
+        job *q = &st->jobs[i];
+        if (q->status == JOB_QUEUED) { q->down_pct = st->down_pct; q->l0 = st->l0; }
+    }
+    j->down_pct = st->down_pct;
+    j->l0 = st->l0;
+    if (j->status == JOB_RUNNING && j->id) dn_cancel(j->id);
+    j->status = JOB_QUEUED;
+    j->id = 0;
+    j->progress = 0.0f;
+    j->cancel_sent = false;
+    out_paths(st, j);
+    engine_submit_next(st);
+}
+
 /* ------------------------------------------------------------------------ */
 /* Result assembly and the host-side mask composite                          */
 /* ------------------------------------------------------------------------ */
@@ -417,10 +467,20 @@ static img_pixels *job_composite_px(job *j, img_pixels *out) {
 static void job_res_texture(cui_ctx *ui, job *j, const img_pixels *px) {
     img_pixels prev = {0};
     if (!img_thumbnail(px, DISPLAY_MAX, &prev)) return;
-    if (j->res_tex) cui_image_destroy(ui, j->res_tex);
+    /* keep the texture being replaced one cross-fade longer: the stage fades
+     * it out over UI_T_RESULT seconds instead of letting the result pop in */
+    if (j->res_tex) {
+        if (j->fade_tex) cui_image_destroy(ui, j->fade_tex);
+        j->fade_tex = j->res_tex;
+        j->fade_w = j->res_w;
+        j->fade_h = j->res_h;
+        j->fade_at = now_seconds();
+    }
     j->res_tex = cui_image_create(ui, prev.w, prev.h, prev.rgba);
     j->res_w = j->res_tex ? prev.w : 0;
     j->res_h = j->res_tex ? prev.h : 0;
+    /* the unprotected preview no longer matches the new result */
+    if (j->raw_tex) { cui_image_destroy(ui, j->raw_tex); j->raw_tex = 0; }
     img_free(&prev);
 }
 
@@ -468,13 +528,15 @@ void rebuild_mask_texture(app_state *st, job *j) {
 
     uint8_t *rgba = (uint8_t *)malloc((size_t)tw * th * 4);
     if (!rgba) { free(w); return; }
+    cui_color mc = fl_mask_rgb(st->ui);
+    int amax = fl_mask_alpha(st->ui);                   /* spec §4 MASK_RED */
     for (int y = 0; y < th; y++) {
         const uint8_t *row = w + (size_t)y * step * sw;
         for (int x = 0; x < tw; x++) {
             uint8_t v = row[(size_t)x * step];
             uint8_t *p = rgba + ((size_t)y * tw + x) * 4;
-            p[0] = 224; p[1] = 122; p[2] = 95;          /* the web UI's mask colour */
-            p[3] = (uint8_t)((int)v * 130 / 255);       /* 0.51 max, sqrt-ish on screen */
+            p[0] = mc.r; p[1] = mc.g; p[2] = mc.b;
+            p[3] = (uint8_t)((int)v * amax / 255);
         }
     }
     free(w);

@@ -3,6 +3,8 @@
 #include "chrome.h"
 #include "ui_tokens.h"
 
+#include <string.h>
+
 #include <windows.h>
 #include <dwmapi.h>
 
@@ -34,13 +36,19 @@
 
 static HWND g_hwnd;
 static WNDPROC g_orig;
-static float g_title_points = UI_TOPBAR;
+static float g_title_points = UI_TITLEBAR;
 static int g_dark = -1; /* -1 = DWM attributes not applied yet */
 /* last cursor we put up; while the window holds capture (a sizing or moving
  * loop owns the pointer) we keep showing it instead of re-deciding */
 static LPCWSTR g_cursor;
 /* WM_MOUSEWHEEL notches waiting for the next UI frame; see chrome_take_wheel */
 static float g_wheel;
+/* Clickable zones inside the title band, x,y,w,h quads in logical points.
+ * The band is HTCAPTION by default (it drags the window); these rects are
+ * where the app's own title-bar controls live, so they must hit-test HTCLIENT. */
+#define CHROME_MAX_ZONES 24
+static float g_zones[CHROME_MAX_ZONES * 4];
+static int g_zones_n;
 
 static float dpi_scale(HWND h) {
     typedef UINT(WINAPI * get_dpi_fn)(HWND);
@@ -103,9 +111,17 @@ static LRESULT hit_test_screen(HWND h, POINT pt) {
     }
 
     if (pt.y < wr.top + title) {
-        /* the window buttons live in the last UI_CAPTION_BUTTONS points: that
-         * strip stays HTCLIENT so CUI receives the clicks, everything to its
-         * left (brand, empty space) drags the window */
+        /* the app's title-bar controls live in published zones (the filename,
+         * the device pill, the gear/help icons) and the window buttons in the
+         * last UI_CAPTION_BUTTONS points: those stay HTCLIENT so CUI receives
+         * the clicks, everything else drags the window */
+        const float lx = (float)(pt.x - wr.left) / s;
+        const float ly = (float)(pt.y - wr.top) / s;
+        for (int i = 0; i < g_zones_n; i++) {
+            const float *z = &g_zones[i * 4];
+            if (lx >= z[0] && lx < z[0] + z[2] && ly >= z[1] && ly < z[1] + z[3])
+                return HTCLIENT;
+        }
         if (pt.x >= wr.right - buttons) return HTCLIENT;
         return HTCAPTION;
     }
@@ -210,7 +226,7 @@ static LRESULT CALLBACK chrome_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 void chrome_attach(void *hwnd, float title_height_points) {
     if (!hwnd) return;
     g_hwnd = (HWND)hwnd;
-    g_title_points = title_height_points > 0.0f ? title_height_points : UI_TOPBAR;
+    g_title_points = title_height_points > 0.0f ? title_height_points : UI_TITLEBAR;
 
     SetWindowLongPtrW(g_hwnd, GWL_STYLE,
                       GetWindowLongPtrW(g_hwnd, GWL_STYLE) | WS_THICKFRAME | WS_CAPTION | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
@@ -260,6 +276,13 @@ float chrome_take_wheel(void) {
     const float v = g_wheel;
     g_wheel = 0.0f;
     return v;
+}
+
+void chrome_set_zones(const float *xywh, int count) {
+    if (!xywh || count <= 0) { g_zones_n = 0; return; }
+    if (count > CHROME_MAX_ZONES) count = CHROME_MAX_ZONES;
+    memcpy(g_zones, xywh, (size_t)count * 4 * sizeof(float));
+    g_zones_n = count;
 }
 
 bool chrome_button_at(int x, int y) {

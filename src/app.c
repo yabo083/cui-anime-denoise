@@ -6,7 +6,8 @@
  *
  * This file owns state, the denoiser event drain and the frame itself.
  * Job lifetime and submission live in app_jobs.c, keyboard/file input in
- * app_input.c, drawing in ui_shell.c / ui_stage.c (AGENTS.md routing table).
+ * app_input.c, drawing in ui_shell.c / ui_stage.c / ui_float.c / ui_lasso.c
+ * (AGENTS.md routing table).
  *
  * Threading / blocking rules:
  *   - denoiser events are drained at the top of every frame, before anything
@@ -20,14 +21,9 @@
  *   - writing the output PNG is a host job: result RGB + source alpha + the
  *     ICC profile the loader lifted with img_decode_file_ex.
  *
- * Layout
- *   topbar 56
- *   +---------- sidebar 300 ---------+- stage ---------------------------+
- *   | strength presets               | head: name, status, actions      |
- *   | scale / l0                     | canvas: compare / brush / lasso  |
- *   | brush (size, mix, feather)     | strip: thumbnails                |
- *   | queue                          | status: progress, paths          |
- *   +--------------------------------+----------------------------------+
+ * Layout (docs/fluent-redesign.md -- canvas first):
+ *   title bar 40   (brand, filename link, device pill, gear, ?, captions)
+ *   canvas   FILL  (the image; pill/tray/protect/tune float inside it)
  */
 
 #define _CRT_SECURE_NO_WARNINGS 1
@@ -142,8 +138,10 @@ void fmt_l0(float v, char *buf, size_t cap) {
 }
 
 void toast(app_state *st, const char *msg) {
+    /* the buffer stays: tests read it; the visible toast is CUI's own */
     str_copy(st->toast, sizeof st->toast, msg);
     st->toast_until = now_seconds() + 3.5;
+    if (st->ui) cui_toast(st->ui, msg, .tone = CUI_TONE_INFO, .duration = 3.5f);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -249,7 +247,13 @@ static void poll_denoiser(cui_ctx *ui, app_state *st) {
                 st->engine_error[0] = 0;
                 str_copy(st->device, sizeof st->device,
                          ev.device[0] ? ev.device : "引擎已就绪");
-                if (ev.message[0]) log_info("engine note: %s", ev.message);
+                /* the READY note is how a GPU->CPU fallback surfaces: it sits
+                 * in the title-bar device pill and in the settings sheet */
+                str_copy(st->device_note, sizeof st->device_note, ev.message);
+                if (ev.message[0]) {
+                    log_info("engine note: %s", ev.message);
+                    toast(st, ev.message);
+                }
                 engine_submit_next(st);
             } else {
                 st->engine_ready = false;
@@ -309,11 +313,20 @@ static void poll_denoiser(cui_ctx *ui, app_state *st) {
             break;
         }
 
+        case DN_EV_DL_PROGRESS:
+            if (ev.id >= 0 && ev.id < 4) {
+                st->dl_done[ev.id] = ev.dl_done;
+                st->dl_total[ev.id] = ev.dl_total;
+            }
+            break;
+
         case DN_EV_DL_DONE:
+            if (ev.id >= 0 && ev.id < 4) st->dl_busy[ev.id] = false;
             toast(st, "模型已就绪");
             break;
 
         case DN_EV_DL_ERROR:
+            if (ev.id >= 0 && ev.id < 4) st->dl_busy[ev.id] = false;
             if (ev.message[0]) toast(st, ev.message);
             break;
 
@@ -417,8 +430,19 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
     bool busy = job_running(st) || st->booting;
     cui_request_wakeup(ui, busy ? 0.05f : 0.5f);
 
+    /* the Fluent palette rides on the token roles; re-apply it whenever the
+     * theme mode flips (system theme follows can change it any frame) */
+    if (st->theme_applied != (int)cui_get_theme_mode(ui)) apply_fluent_theme(ui, st);
+
+    /* Input order: chrome -> floating layers -> canvas. Each reads the hit
+     * rects the previous frame's paint pass published; a click on a control
+     * never reaches the layer beneath it. */
     job *j = job_selected(st);
-    if (j && st->stage_valid) stage_handle_input(st, j);
+    ui_titlebar_input(st);
+    bool over_ui = ui_overlay_input(st, j);
+    if (j && st->stage_valid && !over_ui) stage_handle_input(st, j);
+    else (void)chrome_take_wheel();   /* nowhere to zoom: drop the notches */
+
     /* While a stroke is running the overlay is rebuilt at most every 40 ms:
      * feathering the whole mask per frame costs several ms and would eat the
      * frame budget. The final rebuild after the stroke is exact. */
@@ -430,56 +454,11 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
         }
     }
 
+    /* Layer 1: the 40px title bar and one canvas that fills everything else.
+     * Every other surface floats inside the canvas (ui_float.c). */
     cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .bg = CUI_COLOR_BACKGROUND) {
-        ui_topbar(ui, st);
-        cui_separator(ui);
-        cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_STRETCH) {
-            ui_sidebar(ui, st);
-            cui_separator(ui);
-            cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = PANE_PAD, .gap = PANE_GAP) {
-                if (!st->bench && (st->engine_error[0] || st->booting)) {
-                    cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_CENTER, .pad = 11,
-                            .radius = 12, .bg = CUI_COLOR_SURFACE_MUTED, .border = 1) {
-                        if (st->booting) cui_spinner(ui, 16);
-                        else cui_icon(ui, CUI_ICON_CIRCLE_ALERT, 18, CUI_COLOR_DANGER);
-                        cui_column(ui, .width = CUI_FILL, .gap = 2) {
-                            if (st->booting) {
-                                cui_text(ui, "正在准备 AI 模型", .font = CUI_FONT_MEDIUM, .size = 12.5f);
-                                cui_text(ui, st->boot_stage[0] ? st->boot_stage : "加载中...",
-                                         .size = 11, .color = CUI_COLOR_TEXT_SECONDARY, .nowrap = true);
-                            } else {
-                                cui_text(ui, "推理引擎未就绪", .font = CUI_FONT_MEDIUM, .size = 12.5f);
-                                cui_text(ui, st->engine_error, .size = 11, .nowrap = true,
-                                         .color = CUI_COLOR_TEXT_SECONDARY);
-                            }
-                        }
-                        if (!st->booting && cui_button(ui, "重试", .variant = CUI_BUTTON_OUTLINE,
-                                                        .size = CUI_SIZE_SM, .icon = CUI_ICON_REFRESH_CW)) {
-                            st->want_restart = true;
-                        }
-                    }
-                }
-
-                if (j) {
-                    ui_job_header(ui, st, j);
-                    ui_stage_toolbar(ui, st, j);
-                }
-                float used = PANE_PAD * 2 + (j ? HEAD_H + 34.0f : 0.0f) + STRIP_H + 26.0f + PANE_GAP * 4
-                             + (st->engine_error[0] || st->booting ? 62.0f : 0.0f);
-                float canvas = cui_viewport_size(ui).y - TOPBAR_H - used;
-                if (canvas < 160.0f) canvas = 160.0f;
-                draw_stage_area(ui, st, canvas);
-                ui_strip(ui, st);
-                ui_status(ui, st, j);
-            }
-        }
-    }
-
-    /* transient toast */
-    if (st->toast[0] && now_seconds() < st->toast_until) {
-        cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_CENTER, .pad = 8) {
-            cui_badge(ui, st->toast, .size = CUI_SIZE_MD, .tone = CUI_TONE_INFO, .solid = true);
-        }
+        ui_titlebar(ui, st);
+        draw_stage_area(ui, st, 0.0f);
     }
 
     ui_dialogs(ui, st);
@@ -533,6 +512,7 @@ void app_init(app_state *st) {
     st->view = (view_mode)st->set.view_mode;
     st->auto_update = st->set.auto_check_updates != 0;
     st->tool = TOOL_VIEW;
+    st->theme_applied = -1;   /* forces the Fluent palette on the first frame */
     str_copy(st->device, sizeof st->device, "正在启动...");
 
     loader_init();

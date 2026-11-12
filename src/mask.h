@@ -32,6 +32,7 @@ typedef struct mask_hist mask_hist;
 bool mask_init(mask *m, int w, int h);
 void mask_free(mask *m);
 void mask_clear(mask *m);                 /* everything back to 0 */
+void mask_invert(mask *m);                /* 0 <-> 255 per pixel, journaled */
 bool mask_any(const mask *m);             /* any pixel > 0 */
 bool mask_save(const mask *m, const char *utf8_path);   /* 8-bit grey PNG */
 bool mask_load(mask *m, const char *utf8_path);         /* false if absent/unreadable */

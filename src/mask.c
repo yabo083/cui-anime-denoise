@@ -234,6 +234,23 @@ void mask_clear(mask *m) {
     memset(m->px, 0, (size_t)m->w * (size_t)m->h);
 }
 
+/* Every protected pixel becomes unprotected and back, preserving the
+ * per-pixel strength the strokes carried (the web UI's invert keeps the
+ * value, it does not flatten to 255). Journals the whole layer like
+ * mask_clear() so the invert is one undo step. */
+void mask_invert(mask *m) {
+    if (!m || !m->px) return;
+    mask_hist *h = open_journal;
+    if (h && h->jr.m == m && m->w > 0 && m->h > 0) {
+        int tw = (m->w + MASK_TILE - 1) / MASK_TILE;
+        int th = (m->h + MASK_TILE - 1) / MASK_TILE;
+        for (int ty = 0; ty < th; ty++)
+            for (int tx = 0; tx < tw; tx++) tile_capture(m, h, tx, ty);
+    }
+    size_t n = (size_t)m->w * (size_t)m->h;
+    for (size_t i = 0; i < n; i++) m->px[i] = (uint8_t)(255 - m->px[i]);
+}
+
 bool mask_any(const mask *m) {
     if (!m || !m->px) return false;
     size_t n = (size_t)m->w * (size_t)m->h;

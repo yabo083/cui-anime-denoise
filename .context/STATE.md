@@ -94,9 +94,8 @@
 
 ## 进行中
 
-- **chrome**：`WM_SETCURSOR` 缺失导致缩放不可见；最大化 inset 未处理（§3）——ChromeFix 切片。
-- **视觉**：外壳瓦片/间距 token 化——ShellRestyle 切片；整体视觉方向由设计切片重新定义
-  （产出 `docs/visual-design.md`）。
+- （无）Phase 4b 已收口：chrome 光标/最大化 inset 与 Fluent 视觉 token 化均落地，
+  `docs/visual-design.md` 由 `docs/fluent-redesign.md` 取代为视觉权威。
 
 ## 分层结构（CDC）
 
@@ -105,15 +104,33 @@
 - `src/ui_tokens.h`：视觉 token 单源
 - `tests/test-suite.md`：L4 行为规格（ID / 步骤 / 预期 / 机制）
 - `.context/{DECISIONS,STATE,LESSONS}.md`：架构决策、状态、踩坑
-- `lab/测试工程`：基准与交互断言（14 场景 × 1000 次 + 7 断言）
+- `lab/测试工程`：基准与交互断言（13 场景 × 1000 次 + 12 断言 + `--shots` 截图）
 
 ## 下一步
 
-1. **Phase 4b**：视觉重设计 —— `docs/fluent-redesign.md`（未入库草案）→ 按 token 落到
-   `ui_shell.c`/`ui_stage.c`；4a 刻意保持 UI 行为不变。
-2. `app.c` 已 1251 行，超 ≤800 交互类上限：按职责拆（任务生命周期/合成写盘
-   → `job*.c`；启动与设置意图留 `app.c`），拆完在 AGENTS.md 登记。
-3. chrome：`WM_SETCURSOR` 缩放光标 + 最大化 inset（§3）。
-4. 更新基准：启动期可交互（S2）、缩放光标区（W1）纳入自动断言。
-5. `test_img` clipboard CF_DIB/V5 偶发失败是环境性的（多跑几次会通过），
+1. `test_img` clipboard CF_DIB/V5 偶发失败是环境性的（多跑几次会通过），
    需要时把 clipboard 用例标为 flaky 并单独重试。
+2. 保护模式「取消」目前是整蒙版快照回滚（见 fluent-redesign.md §10）；如将来
+   要逐笔反放撤销日志需先解决快照/日志双轨的一致性。
+3. 微调卡滑杆实时重跑的节流策略未在规范里定死，目前是改值即 rerun；
+   拖动高频触发时可考虑去抖。
+
+## 本轮完成（Phase 4b 画布优先 Fluent UI）
+
+- `ui_shell.c` 重写：40px 标题栏画布（品牌/文件名链接/设备胶囊/设置/帮助/更新/系统三键），
+  控件矩形经 `chrome_set_zones` 报 HTCLIENT；设置侧栏、帮助/关于/更新对话框走 CUI 组件。
+- `ui_stage.c` 收窄为画布：棋盘地板、对比分屏（线+手柄+标签）、遮罩叠加、笔刷光标、阶段输入。
+- 新文件：`ui_float.c` 730 行（pill/胶片托盘/保护工具条/微调卡/引擎横幅/空态 + 浮层命中）、
+  `ui_lasso.c` 297 行（磁性套索，stage 拆出）、`ui_fluent.c/.h` 215+头（调色板上 token + 原语）。
+- 交互：§8 键表全量（B/E/L 进出保护、I 反选走撤销日志、Esc 递进、Space+[ ] 笔刷、Z/M 按住预览、
+  方向键切图、Ctrl+=/- 缩放、F 适合、0 1:1）；保护模式进入拍快照、取消整体回滚、Esc=完成。
+- `chrome.c`：`chrome_set_zones` 让标题栏控件区报 HTCLIENT，其余保持拖动带。
+- `mask.c`：`mask_invert` 过撤销日志。
+- 视觉：`ui_tokens.h` 重写为 Fluent 几何/字阶/圆角/动效；`apply_fluent_theme` 跟随 CUI 主题模式
+  刷规范 §4 调色板（浅/深）；无 token 角色的规范色（acrylic、遮罩红等）走 `fl_*`。
+- 验证：`build.ps1` /W4 零警告；bench 链接 `anime_engine` 后 13 场景×1000 迭代 + **12/12** 交互断言；
+  `bench --shots` 软件光栅截 13 张图走查（空态/对比/结果/微调/托盘/处理中/保护笔刷/套索/横幅错误/设置/帮助/深浅主题）；
+  真实进程冒烟：启动 <1 s 可交互，用户拖入 jpg 去噪完成（日志确认）。
+- 文档：`docs/fluent-redesign.md` §10 登记 10 条有意实现偏差及原因；
+  `docs/design.md` §4 改为落地层规矩、§6 门改为 12/12；README 目录/功能段对齐；
+  `tests/test-suite.md` I1–I12 + S6 + W9/W10 + V1–V9。
