@@ -36,3 +36,7 @@ dist/
 build_*/
 build2/
 build*/
+
+# Exported ONNX models (regenerate with tools/export_onnx.py)
+models/
+*.onnx
