@@ -162,8 +162,15 @@ static void cui__win32_set_cursor(void *user, cui_cursor c) {
     w->cursor = c;
     POINT p;
     GetCursorPos(&p);
+    POINT scr = p;
     ScreenToClient(w->hwnd, &p);
-    if (p.x >= 0 && p.y >= 0 && p.x < w->width && p.y < w->height) SetCursor(w->cursors[c]);
+    /* Anime Denoise: a subclassed WndProc owns the frame bands of its
+     * frameless window (chrome.c). A pointer over one is non-client even
+     * though it sits inside the window rect, so applying the widget cursor
+     * here would stomp the host's resize cursor once per frame. */
+    if (p.x >= 0 && p.y >= 0 && p.x < w->width && p.y < w->height &&
+        SendMessageW(w->hwnd, WM_NCHITTEST, 0, MAKELPARAM(scr.x, scr.y)) == HTCLIENT)
+        SetCursor(w->cursors[c]);
 }
 
 static void cui__win32_set_clip(void *user, const char *utf8) {

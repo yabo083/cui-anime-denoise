@@ -173,11 +173,14 @@ static LRESULT CALLBACK chrome_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
          * while the window moved under the pointer, so the cursor flickered
          * between arrow and size arrow.
          *
-         * CUI would force its own arrow for HTCLIENT, so every code we accept is
-         * answered here and TRUE keeps the message from reaching it
-         * (design.md 3.2). */
+         * HTCLIENT is left for CUI's own handler: it maps the cursor the
+         * widgets asked for (hand over a link, I-beam in a field); answering
+         * it here stomped those to the arrow on every move. We only own the
+         * non-client codes hit_test_screen invented -- the resize bands and
+         * the drag caption (design.md 3.2). */
         WORD hit = LOWORD(lp);
         if (hit == 0) break; /* forwarded by a child; not our frame */
+        if (hit == HTCLIENT) break;
 
         if (GetCapture() != h || !g_cursor) {
             /* a sizing/moving loop owns the pointer while the window holds
