@@ -507,7 +507,7 @@ static void ui_about_dialog(cui_ctx *ui, app_state *st) {
             cui_text(ui, "去噪算法：gpt-anime-denoise (MIT) —— ESRGAN + L0 平滑", .size = 11.5f);
             cui_text(ui, "界面：CUI (MIT)", .size = 11.5f);
             cui_text(ui, "图标：Lucide (ISC)", .size = 11.5f);
-            cui_text(ui, "字体：HarmonyOS Sans（华为授权）", .size = 11.5f);
+            cui_text(ui, "字体：Noto Sans SC（思源黑体，SIL OFL 子集）", .size = 11.5f);
             cui_separator(ui);
             if (cui_button(ui, "查看许可证目录", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
                            .icon = CUI_ICON_FILE_TEXT)) {

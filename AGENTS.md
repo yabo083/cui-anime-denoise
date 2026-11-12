@@ -63,7 +63,7 @@ src/engine/resample.c  Pillow 8bpc BOX/LANCZOS 逐字节移植
 src/engine/l0.c        L0 平滑（pocketfft，float64，多线程）
 src/engine/models.c    APISR/CUGAN .pth 状态与下载（复用 update_io 助手）
 models/        随包 ONNX 模型（esrgan_anime6b_x4 + CUGAN/APISR 骨架）
-assets/        字体（HarmonyOS Sans 子集 + Lucide）
+assets/        字体（Noto Sans SC 子集 + Lucide）
 installer/     Inno Setup 脚本
 ```
 

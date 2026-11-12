@@ -6,7 +6,7 @@
  *     canvas = (4*(w+g)-g, 2*(h+top+g)), background #3C3C3C
  *     cell i at (i%4*(w+g), i//4*(h+top+g)), image at +top, label above it
  *
- * Labels are drawn with GDI on a 32bpp DIB. The bundled HarmonyOS font is
+ * Labels are drawn with GDI on a 32bpp DIB. The bundled Noto Sans SC font is
  * loaded privately (AddFontResourceExW) so it neither needs installing nor
  * leaks into the system's font table; Arial is the fallback.
  */
@@ -62,12 +62,12 @@ static int face_exists(const wchar_t *name)
     return found;
 }
 
-/* Loads the bundled HarmonyOS font privately; NULL when not found. */
+/* Loads the bundled Noto Sans SC font privately; NULL when not found. */
 static HANDLE load_private_font(const wchar_t *exe_dir)
 {
     wchar_t path[1024];
     if (!exe_dir) return NULL;
-    swprintf(path, 1024, L"%sassets\\fonts\\HarmonyOS-Sans-SC-Medium.ttf", exe_dir);
+    swprintf(path, 1024, L"%sassets\\fonts\\NotoSansSC-Medium.ttf", exe_dir);
     if (!AddFontResourceExW(path, FR_PRIVATE, NULL)) return NULL;
     return (HANDLE)1;   /* marker: call remove_private_font */
 }
@@ -76,7 +76,7 @@ static void remove_private_font(const wchar_t *exe_dir)
 {
     wchar_t path[1024];
     if (!exe_dir) return;
-    swprintf(path, 1024, L"%sassets\\fonts\\HarmonyOS-Sans-SC-Medium.ttf", exe_dir);
+    swprintf(path, 1024, L"%sassets\\fonts\\NotoSansSC-Medium.ttf", exe_dir);
     RemoveFontResourceExW(path, FR_PRIVATE, NULL);
 }
 
@@ -84,7 +84,7 @@ static void remove_private_font(const wchar_t *exe_dir)
 static const wchar_t *pick_face(void)
 {
     static const wchar_t *const candidates[] = {
-        L"HarmonyOS Sans SC Medium", L"HarmonyOS Sans SC", L"Arial"
+        L"Noto Sans SC Medium", L"Noto Sans SC", L"Arial"
     };
     for (int i = 0; i < 3; i++)
         if (face_exists(candidates[i])) return candidates[i];

@@ -355,9 +355,9 @@ static void load_fonts(cui_ctx *ui, app_state *st) {
 
     path_join(dir, sizeof dir, cfg_exe_dir(), "assets\\fonts");
 
-    path_join(path, sizeof path, dir, "HarmonyOS-Sans-SC-Regular.ttf");
+    path_join(path, sizeof path, dir, "NotoSansSC-Regular.ttf");
     cui_font regular = path_exists(path) ? cui_font_load_file(ui, path) : -1;
-    path_join(path, sizeof path, dir, "HarmonyOS-Sans-SC-Medium.ttf");
+    path_join(path, sizeof path, dir, "NotoSansSC-Medium.ttf");
     cui_font medium = path_exists(path) ? cui_font_load_file(ui, path) : -1;
     path_join(path, sizeof path, dir, "lucide.ttf");
     cui_font icons = path_exists(path) ? cui_font_load_file(ui, path) : -1;

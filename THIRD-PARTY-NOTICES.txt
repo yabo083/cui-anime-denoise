@@ -42,20 +42,23 @@ ship alongside them in the installed assets\ folder where noted.
    POSSIBILITY OF SUCH DAMAGE.
 
 3. Real-CUGAN weights (up2x-latest-denoise3x.pth, optional model)
+   License  : MIT, Copyright (c) 2022 bilibili
    Source   : https://github.com/bilibili/ailab (Real-CUGAN)
    The weights are NOT redistributed with this program. When the user picks
    the CUGAN model the app downloads the upstream release archive, verifies
    the published SHA-256, and extracts the .pth into
    %LOCALAPPDATA%\AnimeDenoise\models. The bundled
    models\cugan_up2x_denoise3x.skel.onnx is a weightless graph that reads the
-   downloaded .pth as external data. License terms follow the upstream
-   repository.
+   downloaded .pth as external data; it carries no weights itself.
 
 4. APISR RRDB weights (2x_APISR_RRDB_GAN_generator.pth, optional model)
+   License  : GPL-3.0, Copyright (c) 2024 APISR contributors
    Source   : https://github.com/Kiteretsu77/APISR
-   Same arrangement as item 3: the app downloads the upstream .pth on demand
-   (SHA-256 verified); models\apisr_rrdb_x2.skel.onnx is the weightless graph.
-   License terms follow the upstream repository.
+   Same arrangement as item 3 — deliberately so, since GPL-3.0 weights must
+   not ride along inside an MIT-licensed distribution: the app downloads the
+   upstream .pth on demand (SHA-256 verified) into the user's own data
+   directory; models\apisr_rrdb_x2.skel.onnx is the weightless graph with no
+   weight bytes inside.
 
 5. ONNX Runtime (onnxruntime.dll, onnxruntime_providers_shared.dll under
    runtime\)
@@ -128,12 +131,15 @@ ship alongside them in the installed assets\ folder where noted.
     License  : assets\fonts\LICENSE-Lucide.txt
     Source   : https://lucide.dev
 
-11. HarmonyOS Sans SC (Regular and Medium, GB2312 subset)
-    Location : assets\fonts\HarmonyOS-Sans-SC-*.ttf
-    License  : HarmonyOS Sans Fonts License Agreement, Copyright 2021 Huawei
-               Device Co., Ltd. Redistributed unmodified apart from the glyph
-               subset; not sold or distributed on a stand-alone basis.
-    License  : assets\fonts\LICENSE-HarmonyOS-Sans.txt
+11. Noto Sans SC (Regular and Medium, instanced from the variable font and
+    subset to GB2312; identical outlines to Source Han Sans SC)
+    Location : assets\fonts\NotoSansSC-*.ttf
+    License  : SIL Open Font License 1.1, Copyright 2014-2021 Adobe, with
+               Reserved Font Name 'Source' (the subsets therefore keep the
+               'Noto' name only). OFL explicitly permits subsetting and
+               embedding; the full license text ships with the fonts.
+    License  : assets\fonts\OFL-NotoSansSC.txt
+    Source   : https://github.com/google/fonts/tree/main/ofl/notosanssc
 
 12. Inno Setup (installer builder; the setup program embeds its runtime)
     License  : Inno Setup License (free to use, including commercial)

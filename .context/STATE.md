@@ -33,7 +33,7 @@
 - 去噪端到端（原生路径）：拖入/粘贴/命令行 → denoiser 线程 → 对比视图 → 宿主写 PNG
   （2096×1586 ≈ 16 s @esrgan60，保留 alpha 与 ICC，不透明图出 24bpp RGB PNG）。
 - 局部保护：笔刷/橡皮/磁力套索、羽化、撤销重做、宿主侧合成产物 `_protected.png`。
-- 多图队列、缩略图条、快捷键、浅/深色、中文字体（HarmonyOS Sans GB2312 子集）。
+- 多图队列、缩略图条、快捷键、浅/深色、中文字体（Noto Sans SC GB2312 子集）。
 - 安装包：Inno Setup 每用户安装；随包 `runtime/`（ORT+DirectML ≈35 MB）与 `models/`。
 - 自动更新：清单 + SHA-256 + 静默升级，本地 HTTP 实测通过/失败两条路径。
 - 日志轮转、崩溃报告、诊断包。

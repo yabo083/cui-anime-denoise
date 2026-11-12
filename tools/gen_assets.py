@@ -3,10 +3,13 @@
 
 Two families are shipped:
 
-  HarmonyOS-Sans-SC-{Regular,Medium}.ttf
-      Huawei's HarmonyOS Sans SC, subset to Latin-1 + general/CJK punctuation +
-      the GB2312 repertoire (7 370 codepoints). Full files are 8.2 MB each and
-      the subset is 1.7 MB; rarer CJK falls back to the system face at runtime
+  NotoSansSC-{Regular,Medium}.ttf
+      Noto Sans SC (= Source Han Sans SC), SIL OFL 1.1 — chosen because OFL
+      explicitly permits subsetting/embedding, unlike the proprietary font
+      licenses that only allow "unmodified" redistribution. The variable font
+      is instanced at wght 400/500, then subset to Latin-1 + general/CJK
+      punctuation + the GB2312 repertoire (~7 370 codepoints, ~1.5 MB each);
+      rarer CJK falls back to the system face at runtime
       (C:\\Windows\\Fonts\\msyh.ttc).
 
   lucide.ttf
@@ -19,10 +22,13 @@ Usage
     python tools/gen_assets.py --models-dir _dl --icons-only
     python tools/gen_assets.py --check                     # coverage report only
 
-Downloads (only needed for the first run, then keep them in _dl/):
+Downloads (only needed for the first run, then keep them in _dl/fonts/):
     npm pack lucide-static        # -> package/font/lucide.woff2 + codepoints.json
-    HarmonyOS_Sans_SC_Regular.ttf / _Medium.ttf from
-    https://github.com/ajacocks/harmonyos-sans-font/tree/master/HarmonyOS_Sans_SC
+    NotoSansSC-VF.ttf  — NotoSansSC[wght].ttf from
+      https://github.com/google/fonts/tree/main/ofl/notosanssc
+      sha256 A3041811A78C361B1DE50F953C805E0244951C21C5BD412F7232EF0D899AF0DA
+    OFL-NotoSansSC.txt — the OFL text from the same directory (copied into
+      assets/fonts/ so the license travels with the subsets)
 
 Requirements: pip install fonttools brotli
 """
@@ -81,23 +87,47 @@ def build_lucide(models, icons_only):
     print(f"lucide.ttf            {os.path.getsize(dst):>9} bytes")
 
 
-def build_harmony(models, icons_only):
+def build_noto(models, icons_only):
     if icons_only:
         return
+    from fontTools.ttLib import TTFont
+    from fontTools.varLib.instancer import instantiateVariableFont
+    src = os.path.join(models, "fonts", "NotoSansSC-VF.ttf")
+    ofl = os.path.join(models, "fonts", "OFL-NotoSansSC.txt")
+    if not os.path.exists(src):
+        sys.exit(f"missing {src} (see module docstring for the source URL)")
+    if os.path.exists(ofl):
+        import shutil
+        shutil.copyfile(ofl, os.path.join(FONTS, "OFL-NotoSansSC.txt"))
     chars = gb2312_chars()
-    for weight in ("Regular", "Medium"):
-        src = os.path.join(models, f"HarmonyOS_Sans_SC_{weight}.ttf")
-        if not os.path.exists(src):
-            sys.exit(f"missing {src}")
-        dst = os.path.join(FONTS, f"HarmonyOS-Sans-SC-{weight}.ttf")
-        subset_font(src, dst, chars)
-        print(f"HarmonyOS-Sans-SC-{weight} {os.path.getsize(dst):>9} bytes")
+    for name, wght in (("Regular", 400), ("Medium", 500)):
+        font = instantiateVariableFont(
+            TTFont(src), {"wght": wght}, updateFontNames=True)
+        dst = os.path.join(FONTS, f"NotoSansSC-{name}.ttf")
+        save_instance_subset(font, dst, chars)
+        print(f"NotoSansSC-{name:8} {os.path.getsize(dst):>9} bytes")
+
+
+def save_instance_subset(font, dst, codepoints):
+    """Subset an already-instanced TTFont and write it out."""
+    from fontTools import subset
+    opts = subset.Options()
+    opts.layout_features = ["*"]
+    opts.name_IDs = ["*"]
+    opts.name_legacy = False
+    opts.name_languages = ["*"]
+    opts.notdef_outline = True
+    opts.drop_tables += ["DSIG", "GSUB"]
+    sub = subset.Subsetter(options=opts)
+    sub.populate(unicodes=codepoints)
+    sub.subset(font)
+    subset.save_font(font, dst, opts)
 
 
 def check_coverage():
     """Every non-ASCII character in the C sources must exist in the UI font."""
     from fontTools.ttLib import TTFont
-    cmap = TTFont(os.path.join(FONTS, "HarmonyOS-Sans-SC-Regular.ttf")).getBestCmap()
+    cmap = TTFont(os.path.join(FONTS, "NotoSansSC-Regular.ttf")).getBestCmap()
     missing = {}
     for root, _dirs, files in os.walk(os.path.join(ROOT, "src")):
         for name in files:
@@ -128,7 +158,7 @@ def main():
         return
     os.makedirs(FONTS, exist_ok=True)
     build_lucide(args.models_dir, args.icons_only)
-    build_harmony(args.models_dir, args.icons_only)
+    build_noto(args.models_dir, args.icons_only)
     check_coverage()
 
 

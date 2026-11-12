@@ -86,3 +86,22 @@ SR 结果缓存 2 项 LRU（键 = src_key+down_pct）使改 L0 重跑不重复�
 `docs/fluent-redesign.md` §10（文件名链接、设备胶囊、Esc 语义、保护快照取消等）。
 **状态**：已采纳。13 张软件光栅截图走查通过；bench 12/12 交互断言、
 13 场景 p95 全在预算内；真实启动冒烟通过（标题栏/托盘/保护条/设置页/深色）。
+
+## ADR-013 字体换用 Noto Sans SC（SIL OFL），放弃 HarmonyOS Sans
+
+**背景**：开源发布前的许可审计发现 HarmonyOS Sans Fonts License 只授予
+再分发「unmodified copies」的权利并明示「may not make any modifications」，
+而随包字体是 `gen_assets.py` 的 GB2312 子集——子集化即修改，条款层面
+违规（notices 里「unmodified apart from the glyph subset」是自我安慰）。
+**决定**：改用 Noto Sans SC（= Source Han Sans SC，SIL OFL 1.1）。OFL
+明确允许修改/子集化/嵌入；RFN 声明的保留名是 `Source` 而非 `Noto`，
+子集可合法保留 Noto 名。管线：google/fonts 的 `NotoSansSC[wght].ttf`
+可变字体（sha256 已记录于 `tools/gen_assets.py` 文档串）经 fontTools
+instancer 定档 wght 400/500 再子集到 GB2312，产出
+`assets/fonts/NotoSansSC-{Regular,Medium}.ttf`（各 ~2.1MB）。
+CLI `sheet.c` 的 GDI 族名同步改为 `Noto Sans SC Medium/Noto Sans SC`。
+**代价**：与 HarmonyOS 观感存在细微差异（Noto 偏几何、字腔略开），需
+用户实机验收；`_dl/fonts/` 新增 17MB 可变字体缓存。
+**备选**：思源黑体 OTF（同源但 OTF/CFF 且 'Source' 是 RFN，须改名）；
+MiSans/OPPO Sans/阿里普惠体（均专有许可，同病）。OFL 是唯一干净解。
+**状态**：已采纳，构建 1.1.4 安装包待用户实测确认。

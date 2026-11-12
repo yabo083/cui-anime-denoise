@@ -70,7 +70,7 @@
 
 - 圆角：FULL(胶囊)=999；LG=10（浮层）；MD=6（分段滑块、图标钮、缩略图）；SM=4（滑杆拇指、tooltip）。
 - 间距：2/4/8/12/16/24/32，组内 8、组间 ≥16。
-- 字阶（HarmonyOS Sans SC）：Title 18/24 Bold；Subtitle 14/20 Medium；Body 13/18；Caption 11/14。数值一律 tabular + 中等字重。
+- 字阶（Noto Sans SC）：Title 18/24 Bold；Subtitle 14/20 Medium；Body 13/18；Caption 11/14。数值一律 tabular + 中等字重。
 - 尺寸：标题栏 40（系统键 46×40）；主控制条 44 高/圆胶囊/距底 24；分段控件 32 高、滑块 R6；图标钮 32×32（icon 16）、紧凑 28×28（icon 14）；滑杆轨 4px、拇指 16（active 18 + 6px accent 圆点）；保护工具条 44；设置抽屉 320；浮层 260。
 
 ## 6. 动效

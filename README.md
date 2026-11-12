@@ -28,7 +28,7 @@
 - **缩放**：滚轮以外的 `Ctrl+=` / `Ctrl+-`、`F` 适合窗口、`0` 1:1。
 - **输出**：自动写入输出目录，`Ctrl+S` 另存为；透明通道与 ICC 色彩配置保留。
 - **设备**：自动 / GPU（DirectML）/ CPU，设置里可切换，失败自动回退 CPU。
-- 浅色 / 深色 / 跟随系统主题；中文界面，HarmonyOS Sans 字体，Lucide 图标。
+- 浅色 / 深色 / 跟随系统主题；中文界面，Noto Sans SC（思源黑体）字体，Lucide 图标。
 - 自更新（GitHub Release 资产 `update.json` + SHA-256 校验 + Inno Setup 静默升级）、
   日志轮转、崩溃报告、诊断包导出。
 
@@ -82,7 +82,7 @@ mise run dist           # 打安装包到 dist/（需要 Inno Setup 6 的 ISCC.e
 ONNX Runtime + DirectML DLL 和 esrgan 模型；`models/*.skel.onnx` 已入库（由
 `tools/export_onnx.py` 生成，改模型集时才需要重跑）。细节见 `installer/build_installer.ps1` 头注。
 
-`mise run assets` 从 `_dl/` 里的原始字体重新生成子集（HarmonyOS Sans 的 GB2312 子集、完整 Lucide 图标字体），
+`mise run assets` 从 `_dl/` 里的原始字体重新生成子集（Noto Sans SC 的 GB2312 子集、完整 Lucide 图标字体），
 `mise run check-fonts` 校验 `src/` 里出现的每个非 ASCII 字符都在 UI 字体里 —— 构建前的守门检查。
 
 ## 模型
@@ -135,7 +135,7 @@ tests/           test-suite.md（行为规格）+ 各模块独立测试
 
 - 本程序：仓库内 LICENSE。
 - 去噪算法参考 `denoise.py`：MIT，© CXP-2024。
-- 字体：HarmonyOS Sans（华为设备有限公司授权，见 `assets/fonts/LICENSE-HarmonyOS-Sans.txt`）。
+- 字体：Noto Sans SC（SIL OFL 1.1，子集许可文本见 `assets/fonts/OFL-NotoSansSC.txt`）。
 - 图标：Lucide，ISC。
 - UI 框架：CUI，MIT。
 - 第三方许可全文随安装包分发在 `assets/` 下。

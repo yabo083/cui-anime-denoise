@@ -49,7 +49,7 @@
 #define UI_R_MD        6.0f   /* segmented thumb, icon buttons, tiles */
 #define UI_R_SM        4.0f   /* slider thumb, tooltips */
 
-/* --- type scale (HarmonyOS Sans SC) --- */
+/* --- type scale (Noto Sans SC) --- */
 #define UI_FS_TITLE   18.0f   /* /24 bold */
 #define UI_FS_SUB     14.0f   /* /20 medium */
 #define UI_FS_BODY    13.0f   /* /18 */

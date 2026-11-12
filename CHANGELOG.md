@@ -3,6 +3,16 @@
 本项目版本与 GitHub Release 一一对应；GUI 内自动更新读取 Release 资产
 `update.json`（`releases/latest/download/` 始终指向最新版）。
 
+## [1.1.4]
+
+### 修复
+- 中文字体从 HarmonyOS Sans 换成 Noto Sans SC（思源黑体同族字形，SIL OFL
+  1.1）：HarmonyOS 许可只允许再分发「未修改副本」，而我们的随包字体是
+  GB2312 子集——属条款禁止的修改。OFL 明确允许子集化与嵌入，改用可变
+  字体 instancer 出 400/500 两档再子集；观感与字阶不变，体积 2.1MB。
+- `THIRD-PARTY-NOTICES.txt` 补全许可证名称：Real-CUGAN 权重标注 MIT、
+  APISR 权重标注 GPL-3.0（后者正是骨架图 + 按需下载方案存在的原因）。
+
 ## [1.1.3]
 
 ### 新增
