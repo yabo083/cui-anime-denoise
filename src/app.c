@@ -50,7 +50,11 @@
 #include "update.h"
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.0"
+#define APP_VERSION "1.1.3"
+#endif
+
+#ifndef APP_UPDATE_URL
+#define APP_UPDATE_URL ""
 #endif
 
 
@@ -543,8 +547,11 @@ void app_init(app_state *st) {
 
     loader_init();
 
+    /* the manifest ships as a release asset: releases/latest/download always
+     * resolves to the newest tag's copy, so the URL never needs bumping */
     const char *env = getenv("ANIME_DENOISE_UPDATE_URL");
-    str_copy(st->upd_manifest, sizeof st->upd_manifest, env ? env : "");
+    str_copy(st->upd_manifest, sizeof st->upd_manifest,
+             env && env[0] ? env : APP_UPDATE_URL);
     upd_init(APP_VERSION, st->upd_manifest);
 
     char updated[32];

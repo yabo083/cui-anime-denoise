@@ -16,7 +16,7 @@
 #include <shellapi.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.2"
+#define APP_VERSION "1.1.3"
 #endif
 
 static void parse_command_line(app_state *st) {

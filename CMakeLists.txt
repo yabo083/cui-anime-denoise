@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.14)
 
 project(anime_denoise
-    VERSION 1.1.2
+    VERSION 1.1.3
     DESCRIPTION "Anime Denoise: native CUI app, ONNX Runtime inference"
     LANGUAGES C RC)
 
@@ -77,6 +77,7 @@ add_executable(AnimeDenoise
 
 target_compile_definitions(anime_core PUBLIC
     APP_VERSION="${PROJECT_VERSION}"
+    APP_UPDATE_URL="https://github.com/yabo083/cui-anime-denoise/releases/latest/download/update.json"
     _CRT_SECURE_NO_WARNINGS=1
     UNICODE=1
     _UNICODE=1)
@@ -112,6 +113,7 @@ add_executable(anime-denoise
 
 target_compile_definitions(anime-denoise PRIVATE
     APP_VERSION="${PROJECT_VERSION}"
+    APP_UPDATE_URL="https://github.com/yabo083/cui-anime-denoise/releases/latest/download/update.json"
     _CRT_SECURE_NO_WARNINGS=1
     UNICODE=1
     _UNICODE=1)
