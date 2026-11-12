@@ -502,7 +502,9 @@ static void ui_about_dialog(cui_ctx *ui, app_state *st) {
             cui_text(ui, "去除 AI 生图在二次元画风里留下的鱼鳞纹。所有推理都在本机完成。",
                      .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
             cui_separator(ui);
-            cui_text(ui, "去噪算法：gpt-anime-denoise（ESRGAN + L0 平滑）", .size = 11.5f);
+            cui_text(ui, "鸣谢：本项目是一个包装层——算法与交互来自 gpt-anime-denoise，"
+                     "界面工具包是 CUI。", .size = 11.5f, .color = CUI_COLOR_TEXT_SECONDARY);
+            cui_text(ui, "去噪算法：gpt-anime-denoise (MIT) —— ESRGAN + L0 平滑", .size = 11.5f);
             cui_text(ui, "界面：CUI (MIT)", .size = 11.5f);
             cui_text(ui, "图标：Lucide (ISC)", .size = 11.5f);
             cui_text(ui, "字体：HarmonyOS Sans（华为授权）", .size = 11.5f);
