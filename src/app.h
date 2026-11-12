@@ -218,10 +218,12 @@ typedef struct app_state {
     bool stroke_open;
     float paint_x, paint_y;    /* last point in image pixels */
     bool lasso_active;
-    float *lasso;              /* x,y pairs of committed vertices */
+    float *lasso;              /* dense x,y polyline: every committed wire point */
     int lasso_n, lasso_cap;
+    int *lasso_anchor;         /* vertex indices into lasso where each segment ends */
+    int lasso_anchor_n, lasso_anchor_cap;
     float lasso_hover_x, lasso_hover_y;
-    int *lasso_live;           /* path from the last vertex to the cursor */
+    int *lasso_live;           /* wire from the last point to the cursor */
     int lasso_live_n;
 
     /* ui */
@@ -322,6 +324,8 @@ void app_handle_keys(cui_ctx *ui, app_state *st);
 void app_handle_drops(cui_ctx *ui, app_state *st);
 void app_do_paste(app_state *st);
 void app_do_save(app_state *st, bool save_as);
+/* Expands the save_name settings template into a 另存为 default name. */
+void app_save_default_name(const app_state *st, const job *j, char *out, size_t cap);
 void app_browse_dialog(cui_app *app, app_state *st);
 void app_reveal_in_explorer(const char *utf8_path);
 void protect_enter(app_state *st);

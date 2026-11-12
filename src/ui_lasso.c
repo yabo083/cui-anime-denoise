@@ -31,7 +31,7 @@
 
 static void lasso_push(app_state *st, float x, float y) {
     if (st->lasso_n + 2 > st->lasso_cap) {
-        int cap = st->lasso_cap ? st->lasso_cap * 2 : 64;
+        int cap = st->lasso_cap ? st->lasso_cap * 2 : 512;
         float *p = (float *)realloc(st->lasso, (size_t)cap * sizeof(float));
         if (!p) return;
         st->lasso = p;
@@ -41,24 +41,63 @@ static void lasso_push(app_state *st, float x, float y) {
     st->lasso[st->lasso_n++] = y;
 }
 
+static void lasso_push_anchor(app_state *st, int vidx) {
+    if (st->lasso_anchor_n + 1 > st->lasso_anchor_cap) {
+        int cap = st->lasso_anchor_cap ? st->lasso_anchor_cap * 2 : 32;
+        int *p = (int *)realloc(st->lasso_anchor, (size_t)cap * sizeof(int));
+        if (!p) return;
+        st->lasso_anchor = p;
+        st->lasso_anchor_cap = cap;
+    }
+    st->lasso_anchor[st->lasso_anchor_n++] = vidx;
+}
+
 void ensure_edges(job *j) {
     if (j->edges_ready || !j->orig.rgba) return;
     if (mask_build_edges(j->orig.rgba, j->orig.w, j->orig.h, &j->edges)) j->edges_ready = true;
 }
 
-/* Recomputes the live-wire segment from the last vertex to the cursor. */
+/* Recomputes the live-wire segment from the last point to the cursor. */
 static void lasso_update_live(app_state *st, job *j, float hx, float hy) {
     st->lasso_hover_x = hx;
     st->lasso_hover_y = hy;
     if (!j->edges_ready || st->lasso_n < 2) return;
-    int ax = (int)(st->lasso[st->lasso_n - 2] + 0.5f);
-    int ay = (int)(st->lasso[st->lasso_n - 1] + 0.5f);
-    int bx = (int)(hx + 0.5f), by = (int)(hy + 0.5f);
+    int ax = (int)floorf(st->lasso[st->lasso_n - 2]);
+    int ay = (int)floorf(st->lasso[st->lasso_n - 1]);
+    int bx = (int)floorf(hx), by = (int)floorf(hy);
     int cap = 4096;
     free(st->lasso_live);
     st->lasso_live = (int *)malloc((size_t)cap * 2 * sizeof(int));
     if (!st->lasso_live) { st->lasso_live_n = 0; return; }
     st->lasso_live_n = mask_live_wire(&j->edges, ax, ay, bx, by, st->lasso_live, cap);
+}
+
+/* Commits a target point: the wire from the last outline point to it (every
+ * snapped pixel, like the web UI's L.pts) joins the dense polyline, and an
+ * anchor records where the new segment ends. Without an edge map the segment
+ * is just the straight line to the target. */
+static void lasso_commit(app_state *st, job *j, float tx, float ty) {
+    if (st->lasso_n == 0) {
+        lasso_push(st, tx, ty);
+        lasso_push_anchor(st, 0);
+        st->lasso_live_n = 0;
+        return;
+    }
+    int appended = 0;
+    if (j->edges_ready) {
+        lasso_update_live(st, j, tx, ty);
+        /* live[0] is the last outline point; the rest are the new segment */
+        for (int i = 1; i < st->lasso_live_n; i++) {
+            lasso_push(st, (float)st->lasso_live[i * 2] + 0.5f,
+                       (float)st->lasso_live[i * 2 + 1] + 0.5f);
+            appended++;
+        }
+    }
+    if (!appended) lasso_push(st, tx, ty);
+    lasso_push_anchor(st, st->lasso_n / 2 - 1);
+    st->lasso_hover_x = tx;
+    st->lasso_hover_y = ty;
+    st->lasso_live_n = 0;
 }
 
 /* Radius of the edge search around the cursor, in image pixels: ten screen
@@ -85,24 +124,24 @@ static void lasso_snap_pt(const job *j, float x, float y, float *ox, float *oy) 
     *oy = (float)sy + 0.5f;
 }
 
-/* True when a click would close the outline: three corners, and the cursor
- * within LASSO_CLOSE_R screen points of the first one. */
+/* True when a click would close the outline: enough outline to make an area,
+ * and the cursor within LASSO_CLOSE_R screen points of the first point. */
 static bool lasso_near_start(const app_state *st, const job *j, float ix, float iy) {
-    if (!st->lasso_active || st->lasso_n < LASSO_MIN_VERTS * 2) return false;
+    if (!st->lasso_active || st->lasso_anchor_n < LASSO_MIN_VERTS) return false;
     float z = j->view.zoom > 0.0f ? j->view.zoom : 1.0f;
     float dx = ix - st->lasso[0], dy = iy - st->lasso[1];
     return sqrtf(dx * dx + dy * dy) * z < LASSO_CLOSE_R;
 }
 
-/* Commits the cursor as the next vertex: clamped to the image, snapped to an
- * edge, with the live preview restarting from it. */
+/* Commits the cursor as the next anchor: clamped to the image, snapped to an
+ * edge; the wire to it joins the outline and the preview restarts from it. */
 static void lasso_add_vertex(app_state *st, job *j, float ix, float iy) {
     float w = stage_image_w(j), h = stage_image_h(j);
     if (w > 0.0f) { ix = ix < 0.0f ? 0.0f : (ix > w - 1.0f ? w - 1.0f : ix); }
     if (h > 0.0f) { iy = iy < 0.0f ? 0.0f : (iy > h - 1.0f ? h - 1.0f : iy); }
     float sx, sy;
     lasso_snap_pt(j, ix, iy, &sx, &sy);
-    lasso_push(st, sx, sy);
+    lasso_commit(st, j, sx, sy);
     lasso_update_live(st, j, sx, sy);
 }
 
@@ -110,37 +149,70 @@ bool lasso_active(const app_state *st) {
     return st->lasso_active && st->lasso_n >= 2;
 }
 
-/* Fills the outline - or clears it when subtracting - and forgets it. A click
- * without area, or an outline with too few corners, is dropped silently: the
- * user was aiming, not committing. */
+/* Fills the outline - or clears it when subtracting - and forgets it. The
+ * polygon is the dense wire polyline plus the return wire back to the start,
+ * so the filled edge follows the same snapped curves the user watched being
+ * drawn, not straight chords between anchors. */
 void lasso_close_now(app_state *st, job *j, bool subtract) {
-    if (j && st->lasso_n >= LASSO_MIN_VERTS * 2) {
+    if (j && st->lasso_n >= 4) {
+        /* the segment still on the cursor joins the ring first */
+        if (st->lasso_live_n > 1) {
+            for (int i = 1; i < st->lasso_live_n; i++)
+                lasso_push(st, (float)st->lasso_live[i * 2] + 0.5f,
+                           (float)st->lasso_live[i * 2 + 1] + 0.5f);
+            lasso_push_anchor(st, st->lasso_n / 2 - 1);
+        }
+        st->lasso_live_n = 0;
+
         int nv = st->lasso_n / 2;
-        double area = 0.0;
-        for (int i = 0; i < nv; i++) {
-            const float *a = st->lasso + i * 2;
-            const float *b = st->lasso + ((i + 1) % nv) * 2;
-            area += (double)a[0] * (double)b[1] - (double)b[0] * (double)a[1];
+        int bn = 0, *back = NULL;
+        if (j->edges_ready) {
+            back = (int *)malloc((size_t)4096 * 2 * sizeof(int));
+            if (back)
+                bn = mask_live_wire(&j->edges,
+                                    (int)floorf(st->lasso[(nv - 1) * 2]),
+                                    (int)floorf(st->lasso[(nv - 1) * 2 + 1]),
+                                    (int)floorf(st->lasso[0]), (int)floorf(st->lasso[1]),
+                                    back, 4096);
         }
-        area = fabs(area) * 0.5;
-        if (area >= LASSO_MIN_AREA) {
-            mask_stroke_begin(&j->m, j->hist);
-            mask_fill_polygon(&j->m, j->hist, st->lasso, nv,
-                              subtract ? 0 : (int)(st->brush_mix * 2.55f + 0.5f));
-            mask_stroke_end(&j->m, j->hist);
-            mask_note(st, j);
-            j->composite_pending = true;   /* the pump composites after the debounce */
+        int extra = bn > 1 ? bn - 1 : 0;          /* back[0] repeats the last point */
+        float *poly = (float *)malloc((size_t)(nv + extra) * 2 * sizeof(float));
+        if (poly) {
+            memcpy(poly, st->lasso, (size_t)nv * 2 * sizeof(float));
+            for (int i = 1; i < bn; i++) {
+                poly[(nv + i - 1) * 2] = (float)back[i * 2] + 0.5f;
+                poly[(nv + i - 1) * 2 + 1] = (float)back[i * 2 + 1] + 0.5f;
+            }
+            int pv = nv + extra;
+            double area = 0.0;
+            for (int i = 0; i < pv; i++) {
+                const float *a = poly + i * 2;
+                const float *b = poly + ((i + 1) % pv) * 2;
+                area += (double)a[0] * (double)b[1] - (double)b[0] * (double)a[1];
+            }
+            area = fabs(area) * 0.5;
+            if (area >= LASSO_MIN_AREA) {
+                mask_stroke_begin(&j->m, j->hist);
+                mask_fill_polygon(&j->m, j->hist, poly, pv,
+                                  subtract ? 0 : (int)(st->brush_mix * 2.55f + 0.5f));
+                mask_stroke_end(&j->m, j->hist);
+                mask_note(st, j);
+                j->composite_pending = true;   /* the pump composites after the debounce */
+            }
+            free(poly);
         }
+        free(back);
     }
     lasso_reset(st);
 }
 
-/* Backspace: drops the last vertex, leaving the preview running from the one
- * before it. With fewer than two vertices left there is nothing to step back
- * to, so the outline goes away entirely. */
+/* Backspace: drops the last anchor and every wire point it committed, leaving
+ * the preview running from the anchor before it. With only the start point
+ * left there is nothing to step back to, so the outline goes away entirely. */
 void lasso_drop_anchor(app_state *st) {
-    if (!st->lasso_active || st->lasso_n < 4) { lasso_reset(st); return; }
-    st->lasso_n -= 2;
+    if (!st->lasso_active || st->lasso_anchor_n <= 1) { lasso_reset(st); return; }
+    st->lasso_anchor_n--;
+    st->lasso_n = (st->lasso_anchor[st->lasso_anchor_n - 1] + 1) * 2;
     job *j = job_selected(st);
     if (j) lasso_update_live(st, j, st->lasso_hover_x, st->lasso_hover_y);
 }
@@ -197,21 +269,17 @@ void lasso_handle_input(app_state *st, job *j, float ix, float iy, bool left_pre
         return;
     }
 
-    /* Dragging lays an automatic vertex every LASSO_ANCHOR_GAP screen
-     * points of travel and the segment from the last vertex to the cursor
-     * stays a live-wire preview; releasing the button only ends the drag,
-     * it does not close the outline. */
+    /* Dragging lays an automatic anchor every LASSO_ANCHOR_GAP screen
+     * points of travel; the wire to it is committed, and the segment from
+     * the last point to the cursor stays a live-wire preview. Releasing the
+     * button only ends the drag, it does not close the outline. */
     if (st->lasso_n < 2) return;
     float sx, sy;
     lasso_snap_pt(j, ix, iy, &sx, &sy);
     float lx = st->lasso[st->lasso_n - 2], ly = st->lasso[st->lasso_n - 1];
     float z = j->view.zoom > 0.0f ? j->view.zoom : 1.0f;
     if (!near && cui_mouse_down(st->ui, CUI_MOUSE_LEFT) && hypotf(sx - lx, sy - ly) * z >= LASSO_ANCHOR_GAP) {
-        lasso_push(st, sx, sy);
-        /* the preview restarts here; the next move repaints it */
-        st->lasso_hover_x = sx;
-        st->lasso_hover_y = sy;
-        st->lasso_live_n = 0;
+        lasso_commit(st, j, sx, sy);
         return;
     }
     /* the preview runs to the cursor, or back to the first vertex once a
@@ -240,9 +308,12 @@ void lasso_paint(cui_ctx *ui, app_state *st, job *j, cui_rect r) {
         cui_draw_line(ui, (cui_vec2){ ax, ay }, (cui_vec2){ bx, by }, 3.0f, halo);
         cui_draw_line(ui, (cui_vec2){ ax, ay }, (cui_vec2){ bx, by }, 1.5f, CUI_RGBA(0xfffffff2));
     }
-    for (int i = 2; i + 1 < st->lasso_n; i += 2) {
+    /* anchor dots mark where each committed wire segment ends */
+    for (int i = 1; i < st->lasso_anchor_n; i++) {
         float ax, ay;
-        stage_img_to_screen(j, r, st->lasso[i], st->lasso[i + 1], &ax, &ay);
+        int v = st->lasso_anchor[i] * 2;
+        if (v + 1 >= st->lasso_n) continue;
+        stage_img_to_screen(j, r, st->lasso[v], st->lasso[v + 1], &ax, &ay);
         cui_draw_circle(ui, (cui_vec2){ ax, ay }, 4.5f, halo);
         cui_draw_circle(ui, (cui_vec2){ ax, ay }, 3.0f, CUI_RGBA(0xffffffff));
     }
@@ -279,17 +350,25 @@ void lasso_paint(cui_ctx *ui, app_state *st, job *j, cui_rect r) {
         cui_draw_line(ui, (cui_vec2){ lx, ly }, (cui_vec2){ ax, ay }, 1.0f, edge);
     }
     /* the closing preview: fill the would-be outline so the user sees what
-     * they are about to protect (the web UI shades it the same accent) */
-    if (st->lasso_n >= LASSO_MIN_VERTS * 2) {
+     * they are about to protect (the web UI shades it the same accent). The
+     * pending live wire is part of it - it is the last leg back to start. */
+    if (st->lasso_anchor_n >= LASSO_MIN_VERTS) {
         cui_vec2 mp = cui_mouse_pos(ui);
         float hx, hy;
         stage_screen_to_img(j, r, mp.x, mp.y, &hx, &hy);
         if (lasso_near_start(st, j, hx, hy)) {
-            cui_vec2 *pts = malloc((size_t)(st->lasso_n / 2) * sizeof *pts);
+            int nv = st->lasso_n / 2;
+            int extra = st->lasso_live_n > 1 ? st->lasso_live_n - 1 : 0;
+            cui_vec2 *pts = malloc((size_t)(nv + extra) * sizeof *pts);
             if (pts) {
-                for (int i = 0; i + 1 < st->lasso_n; i += 2)
-                    stage_img_to_screen(j, r, st->lasso[i], st->lasso[i + 1], &pts[i / 2].x, &pts[i / 2].y);
-                cui_draw_polygon(ui, pts, st->lasso_n / 2, edge_fill);
+                for (int i = 0; i < nv; i++)
+                    stage_img_to_screen(j, r, st->lasso[i * 2], st->lasso[i * 2 + 1],
+                                        &pts[i].x, &pts[i].y);
+                for (int i = 1; i <= extra; i++)
+                    stage_img_to_screen(j, r, (float)st->lasso_live[i * 2] + 0.5f,
+                                        (float)st->lasso_live[i * 2 + 1] + 0.5f,
+                                        &pts[nv + i - 1].x, &pts[nv + i - 1].y);
+                cui_draw_polygon(ui, pts, nv + extra, edge_fill);
                 free(pts);
             }
         }

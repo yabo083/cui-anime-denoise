@@ -224,6 +224,9 @@ void lasso_reset(app_state *st) {
     free(st->lasso);
     st->lasso = NULL;
     st->lasso_n = st->lasso_cap = 0;
+    free(st->lasso_anchor);
+    st->lasso_anchor = NULL;
+    st->lasso_anchor_n = st->lasso_anchor_cap = 0;
     free(st->lasso_live);
     st->lasso_live = NULL;
     st->lasso_live_n = 0;
