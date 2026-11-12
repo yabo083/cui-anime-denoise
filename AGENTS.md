@@ -10,7 +10,7 @@ Windows 原生去噪工具：C + CUI 即时模式 UI，推理在 Python 侧车�
 2. 视觉只用 `src/ui_tokens.h` 的 token；同角色控件必须同一实现路径。见 §4。
 3. 单个 `.c` 的行数上限按职责类型分：
    - **交互/状态类**（`app.c`、`ui_*.c`、`backend.c`、`chrome.c`）≤ 800 —— 它们的状态耦合最容易变坏；
-   - **单职责叶子模块**（`img.c` WIC、`mask.c` 算法、`config.c` 设置/路径、`log.c` 日志/崩溃/诊断包、`update.c` 网络、`runtime.c` 装配）≤ 1200
+   - **单职责叶子模块**（`img.c` WIC、`mask.c` 算法、`config.c` 设置/路径、`log.c` 日志/崩溃/诊断包、`update.c` 网络、`runtime.c` 装配、`engine/*.c` 推理引擎）≤ 1200
      —— 拆开只会把相互调用的紧耦合代码撕成两半，可读性反而下降。
    超限或职责混杂时按职责拆文件，并在下表登记。
 4. 改完必须跑：`pwsh -NoProfile -File build.ps1`（/W4 零警告）+ `lab/测试工程` 的基准与交互断言。
@@ -29,6 +29,7 @@ Windows 原生去噪工具：C + CUI 即时模式 UI，推理在 Python 侧车�
 | 设置、路径、日志、崩溃、诊断包 | `src/config.h` 注释 | `src/config.c`（设置/路径）、`src/log.c`（日志/崩溃/诊断包） |
 | 首次运行环境安装 | `src/runtime.h` 注释 | `src/runtime.c` |
 | 更新与安装包 | `src/update.h` 注释、`installer/` | `src/update.c`, `installer/*.iss` |
+| 原生推理引擎、设备回退、瓦片、L0、模型下载 | `docs/design.md` §7、`src/engine/engine.h` 注释 | `src/engine/*.c` |
 | 行为规格（该出现什么效果） | `tests/test-suite.md` | `lab/测试工程/bench/bench_main.c` |
 | 历史决策与踩坑 | `.context/DECISIONS.md`、`.context/LESSONS.md` | — |
 
@@ -48,6 +49,11 @@ src/log.c      日志轮转 / 崩溃报告 / 诊断包
 src/runtime.c  uv → Python → PyTorch 首次装配
 src/update.c   更新状态机与公开 API
 src/update_io.c WinHTTP、JSON、SHA-256（update 专用）
+src/engine/engine.h    引擎契约：线程约定、设备/模型枚举、错误语义
+src/engine/engine.c    ORT 装载：DML/CPU EP 会话、瓦片推理、流水线（叶子，≤1200）
+src/engine/resample.c  Pillow 8bpc BOX/LANCZOS 逐字节移植
+src/engine/l0.c        L0 平滑（pocketfft，float64，多线程）
+src/engine/models.c    APISR/CUGAN .pth 状态与下载（复用 update_io 助手）
 worker/        Python 侧车
 assets/        字体（HarmonyOS Sans 子集 + Lucide）、denoise.py
 installer/     Inno Setup 脚本

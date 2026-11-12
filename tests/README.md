@@ -77,3 +77,12 @@ Started from the repository root. The run is hermetic: it points
 The diagnostics case shells out to `python` (`zipfile.testzip()`), so a Python
 on `PATH` is required; the crash case re-launches the same executable with
 `--crash-child` and expects exit code `0xC0000005`.
+
+## test_engine.c — the native engine's deterministic maths (src/engine/)
+
+Covers Python round-half-even sizing, Pillow-identical BOX/LANCZOS output
+bytes, the L0 pass against reference fixture bytes, the fixed-window tiling
+math (including the 256-window cap), and cancel semantics. No ONNX Runtime or
+network needed -- sessions are exercised by the `tmp/phase2` parity driver
+instead. The exact build lines are in the file's header comment; run the
+resulting `test_engine.exe` from anywhere (exit 0 = all checks passed).

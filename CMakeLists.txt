@@ -38,6 +38,33 @@ add_library(anime_core STATIC
 
 target_include_directories(anime_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# Native denoise engine (Phase 2): ONNX Runtime + DirectML inference,
+# Pillow-exact resampling and the L0 pass. Standalone static library: it does
+# not depend on the UI; models.c's download path reuses the updater's WinHTTP
+# + SHA-256 helpers (linked from anime_core / CUI at exe link time).
+add_library(anime_engine STATIC
+    src/engine/engine.c
+    src/engine/l0.c
+    src/engine/models.c
+    src/engine/resample.c
+    third_party/pocketfft/pocketfft_double.c)
+
+target_include_directories(anime_engine PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/pocketfft)
+
+target_compile_definitions(anime_engine PUBLIC
+    _CRT_SECURE_NO_WARNINGS=1
+    UNICODE=1
+    _UNICODE=1)
+
+target_link_libraries(anime_engine PUBLIC dxgi winhttp bcrypt)
+
+# Vendored pocketfft keeps upstream warnings (/W4); don't let them block ours.
+set_source_files_properties(third_party/pocketfft/pocketfft_double.c
+    PROPERTIES COMPILE_OPTIONS "/wd4244;/wd4267;/wd4702")
+
 add_executable(AnimeDenoise
     src/main.c
     src/app.rc)
@@ -53,6 +80,8 @@ if(MSVC)
     # the current ANSI code page and mangles them.
     target_compile_options(anime_core PRIVATE /utf-8 /W4 /permissive-)
     target_compile_options(anime_core PRIVATE $<$<CONFIG:Release>:/O2>)
+    target_compile_options(anime_engine PRIVATE /utf-8 /W4 /permissive-)
+    target_compile_options(anime_engine PRIVATE $<$<CONFIG:Release>:/O2>)
     target_compile_options(AnimeDenoise PRIVATE /utf-8 /W4 /permissive-)
 endif()
 

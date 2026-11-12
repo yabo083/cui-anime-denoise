@@ -7,6 +7,7 @@
 - 视觉系统：§4
 - 状态机：§5
 - 质量门：§6
+- 原生推理引擎：§7
 
 ---
 
@@ -196,3 +197,62 @@ QUEUED ──ready──► RUNNING ──done──► DONE ──(参数变)�
 | 交互断言 | 7/7 通过 | `lab/测试工程` |
 
 每次改 `app.c`/`ui_*.c` 后跑 `lab/测试工程`，报告存档到 `report/latest/`。
+
+---
+
+## 7. 原生推理引擎（`src/engine/`）
+
+引擎是独立的静态库 `anime_engine`：不碰 UI、不碰 worker，输入输出都是 RGB8 位图。
+对外契约在 `src/engine/engine.h`；本节是**不许违背的不变量**。
+
+### 7.1 线程与取消
+
+- `eng_*` 调用运行在**低于正常优先级**的后台线程；同一个 `eng` 一次只允许一个
+  `eng_upscale`/`eng_denoise`（thread-compatible，不是 thread-safe）。
+- `cancel` 是调用方自有的 `volatile long`：瓦片循环与 L0 的每个 beta 迭代都检查；
+  长调用必须**立即**返回 1，不得等到阶段结束。
+- L0 内部自建的工作线程全部 `THREAD_PRIORITY_BELOW_NORMAL`，不得抢 UI。
+
+### 7.2 设备模型
+
+- `AUTO/GPU`：DXGI 高性能首适配器 + DirectML EP（关闭 mem pattern、串行执行）。
+  会话建好后先跑 64² 全灰 sanity tile：输出必须有限且落在 [-0.5, 1.5]；
+  失败即回退 CPU EP，并置 `eng_note`（与 denoise.py 的 GPU_NOTE 同文案语义）。
+- **CUGAN 永远走 CPU EP 整图**：Phase 1 实测 DML 在任意尺寸下输出错误。
+- CPU EP：`SetIntraOpNumThreads(物理核数)`，瓦片固定 384。
+
+### 7.3 瓦片方案（与整图推理等价）
+
+- 固定窗口、`step = tile - 2*pad`、`pad = 64`（≥ RRDB 感受野，Phase 1 实测
+  pad<64 时边缘出现 ±27 级偏差，pad=64 起 max diff 1）。
+- 窗口与图像边缘**齐平**；只在窗口内侧裁 pad —— 边缘窗保留真实边界，
+  保持整图推理的 conv 零填充语义。
+- tile 大小按**空闲显存**：≥ 6 GB → 512，≥ 3 GB → 384，否则 256。
+- 窗口数上限 256/轴；超限必须报错，**禁止**静默输出未覆盖区域。
+
+### 7.4 流水线与数值
+
+`eng_denoise` = BOX 预缩（`down`，默认 0.6，尺寸用 Python round-half-even）
+→ 模型 → LANCZOS 回原尺寸 → L0（`l0 > 0` 时）。例外：APISR 不预缩、源图直进；
+`ENG_M_NONE` 跳过 SR 只跑 L0。
+
+**平价基准（对 denoise.py，必须保持）：**
+
+| 阶段 | 允许偏差 |
+|---|---|
+| `eng_resize` BOX/LANCZOS | 与 PIL 8bpc 逐字节一致（fixture 断言） |
+| `eng_l0` 同一输入 | 与 float64 numpy 逐字节一致（1024×1536 实测 100% exact） |
+| SR 管线（不含 L0） | ±1 级、≥ 99.9% 一致（不同 EP 的 fp 尾差） |
+| 全管线（含 L0） | ≥ 99.6% 一致；个别像素 ±7 级以内 |
+
+全管线偏差的机理：SR 输出的 ±1 输入差会让 L0 的 keep-mask 个别翻转，
+属预期放大效应，不是实现分歧（同一输入下 L0 逐字节一致可证）。
+
+### 7.5 模型文件
+
+- `esrgan_anime6b_x4.onnx`：权重内嵌，随包进 `<exe>\models\`（`tools/export_onnx.py` 产出，不入库）。
+- `*.skel.onnx`：无权重骨架，把上游 `.pth` 当 ONNX external data 读；
+  **骨架与 .pth 必须同目录**，查找顺序 `user_models_dir` → `models_dir`。
+- APISR/CUGAN 的 `.pth` 不随包分发：用户下载（`eng_model_download`），
+  下载与解包都校验 pinned SHA-256（CUGAN 是 zip，取文件名以 .pth 结尾的成员）。
+- 会话 I/O 名固定为 `input`/`output`（export_onnx.py 保证）；不一致宁可回退 CPU 也不猜名。

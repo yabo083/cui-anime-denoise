@@ -41,3 +41,15 @@
 **决定**：`WM_NCCALCSIZE` 清零客户区外的所有区域，`WM_NCHITTEST` 自行划分拖动/缩放/按钮区，保留 `WS_THICKFRAME` 以维持阴影、吸附与最大化动画。
 **代价**：必须自己处理 DPI、最大化 inset 与 `WM_SETCURSOR`，否则缩放“看起来坏了”。
 **状态**：已采纳，命中测试与光标部分重做中。
+
+## ADR-007 原生 C 推理引擎取代 Python 侧车推理
+
+**背景**：Python worker 的推理路径要求 3.1 GB 运行时（uv + Python + torch），首启下载约 2 GB；
+实际算法只有三个固定 ONNX 图（Real-ESRGAN / CUGAN / APISR）加一个 L0 FFT 平滑，torch 不是必需的。
+**决定**：新增 `src/engine/`：动态装载 onnxruntime.dll，DirectML EP（高性能适配器，失败回退 CPU EP）；
+resize 逐字节移植 Pillow 8bpc；L0 用 pocketfft 逐位复刻 float64 参考实现；
+模型走 ONNX —— ESRGAN 权重内嵌随包，CUGAN/APISR 用无权重骨架把上游 .pth 当 external data 读。
+**代价**：瓦片、设备回退、sanity tile 都要自己维护；ORT+DirectML 运行时约 35 MB 需随包或按需下载；
+APISR/CUGAN 的 .pth 仍由用户下载（5–18 MB，不再是 2 GB）。
+**状态**：已采纳。Phase 2 引擎层完成并通过逐位平价（SR ±1 级 ≥99.98% 一致、同输入 L0 逐字节一致）；
+UI 接入是后续切片。

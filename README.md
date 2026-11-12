@@ -64,6 +64,9 @@ src/
   update.c      更新状态机
   update_io.c   WinHTTP / JSON / SHA-256
   ui_tokens.h   视觉 token 单源
+  engine/       原生推理引擎（Phase 2）：ONNX Runtime + DirectML 装载、
+                Pillow 逐字节 resample、pocketfft L0、模型下载；
+                对外契约 engine.h，规范 design.md §7
 worker/worker.py 侧车：模型、去噪、合成、模型下载
 assets/          字体子集、完整 Lucide、随包 denoise.py
 installer/       Inno Setup 脚本与打包脚本
