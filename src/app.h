@@ -259,6 +259,11 @@ void mask_note(app_state *st, job *j);
 void request_composite(app_state *st, job *j);
 void job_focus(app_state *st, int index);
 void lasso_reset(app_state *st);
+/* Lasso interaction hooks, implemented in ui_stage.c and driven by the key
+ * bindings in app.c (Enter / Backspace / Alt). */
+bool lasso_active(const app_state *st);
+void lasso_close_now(app_state *st, job *j, bool subtract);
+void lasso_drop_anchor(app_state *st);
 
 /* Drawing entry points. */
 void ui_topbar(cui_ctx *ui, app_state *st);

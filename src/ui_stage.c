@@ -26,6 +26,25 @@
 #define STAGE_ZOOM_MIN        0.02f          /* view zoom range, screen points per image px */
 #define STAGE_ZOOM_MAX        16.0f
 
+/* Lasso. The outline is aimed by eye, so its feel must not change with zoom:
+ * every distance below is screen points and is divided by the zoom where the
+ * mask needs image pixels. The numbers are the web UI's. */
+#define LASSO_ANCHOR_GAP      48.0f          /* travel between automatic vertices */
+#define LASSO_CLOSE_R         10.0f          /* the first vertex is a click target */
+#define LASSO_SNAP_R          10.0f          /* edge search radius */
+#define LASSO_SNAP_MIN          2            /* image px */
+#define LASSO_SNAP_MAX         24
+#define LASSO_MIN_VERTS         3            /* an outline needs three corners */
+#define LASSO_MIN_AREA         4.0f          /* image px²; below this it was a click */
+#define LASSO_DBL_MS         400.0           /* a second click this soon... */
+#define LASSO_DBL_PX           6.0f          /* ...and this close closes the outline */
+
+/* Brush size keys step proportionally, so 2 -> 300 takes the same number of
+ * taps at either end of the range. */
+#define BRUSH_STEP             0.85f
+#define BRUSH_KEY_MIN          2.0f
+#define BRUSH_KEY_MAX        300.0f
+
 /* The stage measures in image pixels, the space the mask, the edge map, the
  * brush and the worker all use. Above DISPLAY_MAX the picture we draw is only
  * a downscaled texture, so its size is NOT that space: measuring the brush,
@@ -162,15 +181,99 @@ static void lasso_update_live(app_state *st, job *j, float hx, float hy) {
     st->lasso_live_n = mask_live_wire(&j->edges, ax, ay, bx, by, st->lasso_live, cap);
 }
 
-static void lasso_close(app_state *st, job *j, bool subtract) {
-    if (st->lasso_n >= 6) {
-        mask_stroke_begin(&j->m, j->hist);
-        mask_fill_polygon(&j->m, j->hist, st->lasso, st->lasso_n / 2,
-                          subtract ? 0 : (int)(st->brush_mix * 2.55f + 0.5f));
-        mask_stroke_end(&j->m, j->hist);
-        mask_note(st, j);
+/* Radius of the edge search around the cursor, in image pixels: ten screen
+ * points whatever the zoom, which is where the mask's own limit kicks in. */
+static int lasso_snap_radius(const job *j) {
+    float z = j->view.zoom;
+    long r = lroundf(z > 0.0f ? LASSO_SNAP_R / z : LASSO_SNAP_R);
+    if (r < LASSO_SNAP_MIN) r = LASSO_SNAP_MIN;
+    if (r > LASSO_SNAP_MAX) r = LASSO_SNAP_MAX;
+    return (int)r;
+}
+
+/* Pulls a cursor point onto the nearest strong edge. mask_snap() hands the
+ * point back unchanged when nothing nearby scores 20, so the result is always
+ * usable. The half pixel puts the vertex on that pixel's centre, the space the
+ * brush and mask_fill_polygon() both measure in. */
+static void lasso_snap_pt(const job *j, float x, float y, float *ox, float *oy) {
+    *ox = x;
+    *oy = y;
+    if (!j->edges_ready) return;
+    int sx = 0, sy = 0;
+    if (!mask_snap(&j->edges, (int)lroundf(x), (int)lroundf(y), lasso_snap_radius(j), &sx, &sy)) return;
+    *ox = (float)sx + 0.5f;
+    *oy = (float)sy + 0.5f;
+}
+
+/* True when a click would close the outline: three corners, and the cursor
+ * within LASSO_CLOSE_R screen points of the first one. */
+static bool lasso_near_start(const app_state *st, const job *j, float ix, float iy) {
+    if (!st->lasso_active || st->lasso_n < LASSO_MIN_VERTS * 2) return false;
+    float z = j->view.zoom > 0.0f ? j->view.zoom : 1.0f;
+    float dx = ix - st->lasso[0], dy = iy - st->lasso[1];
+    return sqrtf(dx * dx + dy * dy) * z < LASSO_CLOSE_R;
+}
+
+/* Commits the cursor as the next vertex: clamped to the image, snapped to an
+ * edge, with the live preview restarting from it. */
+static void lasso_add_vertex(app_state *st, job *j, float ix, float iy) {
+    float w = image_w(j), h = image_h(j);
+    if (w > 0.0f) { ix = ix < 0.0f ? 0.0f : (ix > w - 1.0f ? w - 1.0f : ix); }
+    if (h > 0.0f) { iy = iy < 0.0f ? 0.0f : (iy > h - 1.0f ? h - 1.0f : iy); }
+    float sx, sy;
+    lasso_snap_pt(j, ix, iy, &sx, &sy);
+    lasso_push(st, sx, sy);
+    lasso_update_live(st, j, sx, sy);
+}
+
+bool lasso_active(const app_state *st) {
+    return st->lasso_active && st->lasso_n >= 2;
+}
+
+/* Fills the outline - or clears it when subtracting - and forgets it. A click
+ * without area, or an outline with too few corners, is dropped silently: the
+ * user was aiming, not committing. */
+void lasso_close_now(app_state *st, job *j, bool subtract) {
+    if (j && st->lasso_n >= LASSO_MIN_VERTS * 2) {
+        int nv = st->lasso_n / 2;
+        double area = 0.0;
+        for (int i = 0; i < nv; i++) {
+            const float *a = st->lasso + i * 2;
+            const float *b = st->lasso + ((i + 1) % nv) * 2;
+            area += (double)a[0] * (double)b[1] - (double)b[0] * (double)a[1];
+        }
+        area = fabs(area) * 0.5;
+        if (area >= LASSO_MIN_AREA) {
+            mask_stroke_begin(&j->m, j->hist);
+            mask_fill_polygon(&j->m, j->hist, st->lasso, nv,
+                              subtract ? 0 : (int)(st->brush_mix * 2.55f + 0.5f));
+            mask_stroke_end(&j->m, j->hist);
+            mask_note(st, j);
+            j->composite_pending = true;   /* the pump composites after the debounce */
+        }
     }
     lasso_reset(st);
+}
+
+/* Backspace: drops the last vertex, leaving the preview running from the one
+ * before it. With fewer than two vertices left there is nothing to step back
+ * to, so the outline goes away entirely. */
+void lasso_drop_anchor(app_state *st) {
+    if (!st->lasso_active || st->lasso_n < 4) { lasso_reset(st); return; }
+    st->lasso_n -= 2;
+    job *j = job_selected(st);
+    if (j) lasso_update_live(st, j, st->lasso_hover_x, st->lasso_hover_y);
+}
+
+/* Brush size from the keyboard: proportional, so the step feels the same at a
+ * 3 px brush and at a 300 px one. */
+static void brush_step(app_state *st, float factor) {
+    float s = st->brush_size > 0.0f ? st->brush_size * factor : BRUSH_KEY_MIN;
+    if (s < BRUSH_KEY_MIN) s = BRUSH_KEY_MIN;
+    if (s > BRUSH_KEY_MAX) s = BRUSH_KEY_MAX;
+    if (s == st->brush_size) return;
+    st->brush_size = s;
+    settings_from_state(st);
 }
 
 void stage_handle_input(app_state *st, job *j) {
@@ -183,6 +286,11 @@ void stage_handle_input(app_state *st, job *j) {
      * frame the canvas is up, so a scroll outside it is dropped rather than
      * waiting for the next picture. */
     float wheel = chrome_take_wheel();
+
+    /* Brush size: [ shrinks, ] grows. Read before the canvas test so the keys
+     * work wherever the pointer is, as they do in the web UI. */
+    if (cui_key_pressed(ui, CUI_KEY_LEFT_BRACKET)) brush_step(st, BRUSH_STEP);
+    if (cui_key_pressed(ui, CUI_KEY_RIGHT_BRACKET)) brush_step(st, 1.0f / BRUSH_STEP);
 
     if (!inside) {
         if (st->painting) {
@@ -211,15 +319,20 @@ void stage_handle_input(app_state *st, job *j) {
     if (st->tool == TOOL_BRUSH || st->tool == TOOL_ERASE) {
         mask_brush b;
         b.diameter = st->brush_size;
-        b.value = tool_eraser ? 0 : (int)(st->brush_mix * 2.55f + 0.5f);
+        int paint_value = (int)(st->brush_mix * 2.55f + 0.5f);
+
+        /* the erase flag belongs to the stroke, not to the frame: a right-button
+         * drag stays an eraser for its whole length even though only the press
+         * frame sees the button go down */
+        static bool stroke_erase;
 
         /* a fast click can go down and up inside one frame, so also accept the
          * click event CUI already tracks */
         bool left_press = mouse_pressed(ui, CUI_MOUSE_LEFT) || cui_mouse_clicked(ui, CUI_MOUSE_LEFT);
-        bool right_press = mouse_pressed(ui, CUI_MOUSE_RIGHT);
+        bool right_press = mouse_pressed(ui, CUI_MOUSE_RIGHT) || cui_mouse_clicked(ui, CUI_MOUSE_RIGHT);
         if (left_press || right_press) {
-            bool erase = tool_eraser || right_press;
-            b.value = erase ? 0 : b.value;
+            stroke_erase = tool_eraser || right_press;
+            b.value = stroke_erase ? 0 : paint_value;
             mask_stroke_begin(&j->m, j->hist);
             mask_stroke_dot(&j->m, j->hist, ix, iy, &b);
             st->painting = true;
@@ -228,6 +341,7 @@ void stage_handle_input(app_state *st, job *j) {
             st->paint_y = iy;
             mask_note(st, j);
         } else if (st->painting && (cui_mouse_down(ui, CUI_MOUSE_LEFT) || cui_mouse_down(ui, CUI_MOUSE_RIGHT))) {
+            b.value = stroke_erase ? 0 : paint_value;
             if (fabsf(ix - st->paint_x) + fabsf(iy - st->paint_y) > 0.5f) {
                 mask_stroke_segment(&j->m, j->hist, st->paint_x, st->paint_y, ix, iy, &b);
                 st->paint_x = ix;
@@ -245,16 +359,72 @@ void stage_handle_input(app_state *st, job *j) {
 
     if (st->tool == TOOL_LASSO) {
         ensure_edges(j);
-        if (cui_mouse_clicked(ui, CUI_MOUSE_LEFT) || mouse_pressed(ui, CUI_MOUSE_LEFT)) {
-            if (!st->lasso_active) { lasso_reset(st); st->lasso_active = true; }
-            lasso_push(st, ix, iy);
-            lasso_update_live(st, j, ix, iy);
-        } else if (mouse_pressed(ui, CUI_MOUSE_RIGHT)) {
-            if (st->lasso_active) lasso_close(st, j, true);
-        } else if (st->lasso_active) {
-            float dx = ix - st->lasso_hover_x, dy = iy - st->lasso_hover_y;
-            if (dx * dx + dy * dy > 16.0f) lasso_update_live(st, j, ix, iy);
+
+        bool alt = (cui_key_mods(ui) & CUI_MOD_ALT) != 0;
+        bool left_press = mouse_pressed(ui, CUI_MOUSE_LEFT) || cui_mouse_clicked(ui, CUI_MOUSE_LEFT);
+        bool right_press = mouse_pressed(ui, CUI_MOUSE_RIGHT) || cui_mouse_clicked(ui, CUI_MOUSE_RIGHT);
+        bool near = lasso_near_start(st, j, ix, iy);
+
+        /* two clicks in the same spot in quick succession are the other way to
+         * say "close it" */
+        static double prev_click_at;
+        static float prev_click_x, prev_click_y;
+        bool dbl = false;
+        if (left_press) {
+            double now = now_seconds();
+            dbl = prev_click_at > 0.0 && now - prev_click_at < LASSO_DBL_MS / 1000.0 &&
+                  hypotf(m.x - prev_click_x, m.y - prev_click_y) < LASSO_DBL_PX;
+            prev_click_at = now;
+            prev_click_x = m.x;
+            prev_click_y = m.y;
         }
+
+        if (!st->lasso_active) {
+            if (left_press) {
+                st->lasso_active = true;
+                lasso_add_vertex(st, j, ix, iy);
+            }
+            return;
+        }
+
+        if (left_press) {
+            /* back on the first vertex with three corners placed: this click
+             * closes instead of adding another one */
+            if ((near || dbl) && st->lasso_n >= LASSO_MIN_VERTS * 2) {
+                lasso_close_now(st, j, alt);
+                return;
+            }
+            lasso_add_vertex(st, j, ix, iy);
+            return;
+        }
+
+        if (right_press) {
+            lasso_close_now(st, j, alt);
+            return;
+        }
+
+        /* Dragging lays an automatic vertex every LASSO_ANCHOR_GAP screen
+         * points of travel and the segment from the last vertex to the cursor
+         * stays a live-wire preview; releasing the button only ends the drag,
+         * it does not close the outline. */
+        if (st->lasso_n < 2) return;
+        float sx, sy;
+        lasso_snap_pt(j, ix, iy, &sx, &sy);
+        float lx = st->lasso[st->lasso_n - 2], ly = st->lasso[st->lasso_n - 1];
+        float z = j->view.zoom > 0.0f ? j->view.zoom : 1.0f;
+        if (!near && cui_mouse_down(ui, CUI_MOUSE_LEFT) && hypotf(sx - lx, sy - ly) * z >= LASSO_ANCHOR_GAP) {
+            lasso_push(st, sx, sy);
+            /* the preview restarts here; the next move repaints it */
+            st->lasso_hover_x = sx;
+            st->lasso_hover_y = sy;
+            st->lasso_live_n = 0;
+            return;
+        }
+        /* the preview runs to the cursor, or back to the first vertex once a
+         * click there would close the outline */
+        float tx = near ? st->lasso[0] : sx, ty = near ? st->lasso[1] : sy;
+        float dx = tx - st->lasso_hover_x, dy = ty - st->lasso_hover_y;
+        if (dx * dx + dy * dy > 1.0f) lasso_update_live(st, j, tx, ty);
         return;
     }
 
@@ -416,11 +586,26 @@ static void stage_paint(cui_ctx *ui, cui_rect r, void *user) {
             cui_draw_line(ui, (cui_vec2){ ax, ay }, (cui_vec2){ bx, by }, 3.0f, CUI_RGBA(0x00000066));
             cui_draw_line(ui, (cui_vec2){ ax, ay }, (cui_vec2){ bx, by }, 1.5f, CUI_RGBA(0xfffffff2));
         }
-        for (int i = 0; i + 1 < st->lasso_n; i += 2) {
+        for (int i = 2; i + 1 < st->lasso_n; i += 2) {
             float ax, ay;
             img_to_screen(j, r, st->lasso[i], st->lasso[i + 1], &ax, &ay);
             cui_draw_circle(ui, (cui_vec2){ ax, ay }, 4.5f, CUI_RGBA(0x00000066));
             cui_draw_circle(ui, (cui_vec2){ ax, ay }, 3.0f, CUI_RGBA(0xffffffff));
+        }
+        /* the first vertex is also the click target that closes the outline, so
+         * it gets a bigger ring - and a thicker, coral one while a click there
+         * would actually close */
+        {
+            cui_vec2 mp = cui_mouse_pos(ui);
+            float hx, hy;
+            screen_to_img(j, r, mp.x, mp.y, &hx, &hy);
+            bool closable = lasso_near_start(st, j, hx, hy);
+            float fx, fy;
+            img_to_screen(j, r, st->lasso[0], st->lasso[1], &fx, &fy);
+            float ring = closable ? 8.0f : 6.0f;
+            cui_draw_circle(ui, (cui_vec2){ fx, fy }, ring, CUI_RGBA(0x00000080));
+            cui_draw_circle(ui, (cui_vec2){ fx, fy }, ring - (closable ? 3.0f : 2.0f),
+                            closable ? CUI_RGBA(0xe07a5fff) : CUI_RGBA(0xffffffff));
         }
         float ax, ay;
         img_to_screen(j, r, st->lasso[st->lasso_n - 2], st->lasso[st->lasso_n - 1], &ax, &ay);

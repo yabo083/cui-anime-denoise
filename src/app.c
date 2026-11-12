@@ -918,6 +918,14 @@ static void handle_shortcuts(cui_ctx *ui, app_state *st) {
         st->tool = st->tool == TOOL_LASSO ? TOOL_VIEW : TOOL_LASSO;
         if (st->tool == TOOL_LASSO && j) ensure_edges(j);
     }
+    /* lasso: Enter closes, Backspace drops the last anchor (the tool itself
+     * lives in ui_stage.c) */
+    if (j && lasso_active(st)) {
+        bool alt = (cui_key_mods(ui) & CUI_MOD_ALT) != 0;
+        if (cui_key_pressed(ui, CUI_KEY_ENTER)) lasso_close_now(st, j, alt);
+        if (cui_key_pressed(ui, CUI_KEY_BACKSPACE)) lasso_drop_anchor(st);
+    }
+
     if (cui_key_pressed(ui, CUI_KEY_ESCAPE)) {
         if (st->lasso_active) lasso_reset(st);
         else st->tool = TOOL_VIEW;
