@@ -924,9 +924,14 @@ static void handle_shortcuts(cui_ctx *ui, app_state *st) {
     }
     if (cui_key_pressed(ui, CUI_KEY_F) && j) stage_fit(j, st->stage);
     if (cui_key_pressed(ui, CUI_KEY_0) && j) {
+        /* the view lives in image pixels (mask space), so 1:1 centres on the
+         * image, not on the downscaled display texture */
+        float iw = (float)(j->m.w ? j->m.w : j->disp_w);
+        float ih = (float)(j->m.h ? j->m.h : j->disp_h);
         j->view.zoom = 1.0f;
-        j->view.cx = j->disp_w * 0.5f;
-        j->view.cy = j->disp_h * 0.5f;
+        j->view.cx = iw * 0.5f;
+        j->view.cy = ih * 0.5f;
+        j->view_fitted = false;
     }
     if (cui_key_pressed(ui, CUI_KEY_LEFT)) jump_job(st, -1);
     if (cui_key_pressed(ui, CUI_KEY_RIGHT)) jump_job(st, +1);
