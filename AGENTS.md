@@ -21,6 +21,8 @@ Windows 原生去噪工具：C + CUI 即时模式 UI，进程内 ONNX Runtime（
 | 要改什么 | 先读 | 再读代码 |
 |---|---|---|
 | 线程模型、denoiser 事件、卡顿 | `docs/design.md` §2/§5 | `src/denoiser.c`, `src/app.c` |
+| 任务生命周期、队列、合成调度 | `docs/design.md` §2/§5 | `src/app_jobs.c` |
+| 快捷键、拖放、粘贴、另存 | `docs/design.md` §4/§5 | `src/app_input.c` |
 | 窗口边框、拖动、缩放、标题栏 | `docs/design.md` §3 | `src/chrome.c`, `src/main.c` |
 | 界面外观、组件尺寸、一致性 | `docs/design.md` §4、`src/ui_tokens.h` | `src/ui_shell.c`, `src/ui_stage.c` |
 | 画布交互、笔刷、套索、缩放 | `docs/design.md` §4/§5 | `src/ui_stage.c`, `src/mask.c` |
@@ -36,6 +38,8 @@ Windows 原生去噪工具：C + CUI 即时模式 UI，进程内 ONNX Runtime（
 
 ```
 src/app.c      状态机、denoiser 事件、意图处理（不含绘制）
+src/app_jobs.c 任务生命周期、加载队列、提交、宿主侧保护合成
+src/app_input.c 键盘命令、拖放、粘贴、另存为、文件对话框
 src/ui_shell.c 顶栏 / 侧栏 / 缩略图条 / 状态行
 src/ui_stage.c 画布：对比、笔刷、套索、缩放
 src/denoiser.c 进程内推理工作线程：任务/事件环、SR 缓存、设备与模型管理

@@ -22,6 +22,8 @@ add_subdirectory(third_party/CUI)
 # project (lab/测试工程) can drive the same UI code without a window.
 add_library(anime_core STATIC
     src/app.c
+    src/app_jobs.c
+    src/app_input.c
     src/ui_shell.c
     src/ui_stage.c
     src/denoiser.c

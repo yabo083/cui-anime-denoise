@@ -242,9 +242,30 @@ bool path_exists(const char *utf8);
 bool file_copy(const char *from, const char *to);
 double now_seconds(void);
 bool job_running(const app_state *st);
-void engine_submit_next(app_state *st);
+
+/* Job lifecycle, loader queue, denoiser submission (app_jobs.c). */
+int job_find(const app_state *st, int dn_id);
+void job_free(cui_ctx *ui, job *j);
+void out_paths(app_state *st, job *j);
+void job_focus(app_state *st, int index);
+void job_clear_finished(cui_ctx *ui, app_state *st);
+job *app_job_add_now(app_state *st, const char *path);   /* synchronous decode; tests/paste */
 void enqueue_path(app_state *st, const char *path);
 void pump_load_queue(app_state *st);
+eng_device device_pref(const app_state *st);
+void engine_start_now(app_state *st);
+void engine_submit_next(app_state *st);
+img_pixels *job_raw_result_px(job *j, img_pixels *out);  /* denoise RGB + source alpha, no mask */
+void job_apply_done(cui_ctx *ui, app_state *st, job *j, dn_event *ev);
+void request_composite(app_state *st, job *j);
+void flush_composite(app_state *st);
+
+/* Keys, drops, paste, save, file dialogs (app_input.c). */
+void app_handle_keys(cui_ctx *ui, app_state *st);
+void app_handle_drops(cui_ctx *ui, app_state *st);
+void app_do_paste(app_state *st);
+void app_do_save(app_state *st, bool save_as);
+void app_browse_dialog(cui_app *app, app_state *st);
 
 /* Shared helpers (defined in app.c; used by ui_shell.c and ui_stage.c). */
 void toast(app_state *st, const char *msg);
@@ -257,8 +278,6 @@ void apply_preset(app_state *st, int index);
 int preset_of(int down_pct, float l0);
 void settings_from_state(app_state *st);
 void mask_note(app_state *st, job *j);
-void request_composite(app_state *st, job *j);
-void job_focus(app_state *st, int index);
 void lasso_reset(app_state *st);
 /* Lasso interaction hooks, implemented in ui_stage.c and driven by the key
  * bindings in app.c (Enter / Backspace / Alt). */
