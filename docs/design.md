@@ -228,8 +228,9 @@ QUEUED ──ready──► RUNNING ──done──► DONE ──(参数变)�
 ### 7.5 模型文件
 
 - `esrgan_anime6b_x4.onnx`：权重内嵌，随包进 `<exe>\models\`（`tools/export_onnx.py` 产出，不入库）。
-- `*.skel.onnx`：无权重骨架，把上游 `.pth` 当 ONNX external data 读；
-  **骨架与 .pth 必须同目录**，查找顺序 `user_models_dir` → `models_dir`。
+- `*.skel.onnx`：无权重骨架（31–108 KB，**已入库**随仓库分发），把上游 `.pth`
+  当 ONNX external data 读；**骨架与 .pth 必须同目录**，查找顺序
+  `user_models_dir` → `models_dir`。
 - APISR/CUGAN 的 `.pth` 不随包分发：用户下载（`eng_model_download`），
   下载与解包都校验 pinned SHA-256（CUGAN 是 zip，取文件名以 .pth 结尾的成员）。
 - 会话 I/O 名固定为 `input`/`output`（export_onnx.py 保证）；不一致宁可回退 CPU 也不猜名。

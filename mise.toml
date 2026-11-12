@@ -26,6 +26,10 @@ run = "uv run --with fonttools --with brotli python tools/gen_assets.py --models
 description = "Verify every non-ASCII character in src/ exists in the UI font"
 run = "uv run --with fonttools python tools/gen_assets.py --check"
 
+[tasks.deps]
+description = "Fetch pinned ONNX Runtime + DirectML DLLs and the esrgan model into build/ (packaging prerequisite)"
+run = "pwsh -NoProfile -File tools/fetch_deps.ps1"
+
 [tasks.dist]
 description = "Build the Inno Setup installer into dist/"
 run = "pwsh -NoProfile -File installer/build_installer.ps1 -Version ${VERSION:-1.1.0}"

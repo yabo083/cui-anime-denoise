@@ -23,11 +23,33 @@
 ## 安装
 
 `dist/AnimeDenoise-<版本>-setup.exe` 是每用户安装（无需管理员），默认装到
-`%LOCALAPPDATA%\Programs\AnimeDenoise`。
+`%LOCALAPPDATA%\Programs\AnimeDenoise`。安装向导里两个可选集成默认开启：
 
-安装包自带全部推理资产：`runtime/`（onnxruntime.dll + DirectML.dll）、`models/`（esrgan_anime6b_x4.onnx 等
-随包模型）、`assets/`（字体、图标）。无需 Python、无需首次下载环境；CUGAN / APISR 模型可在设置页按需下载
-到 `%LOCALAPPDATA%\AnimeDenoise\models`。
+- **加入用户 PATH**：装完任意目录都能直接敲 `anime-denoise`。
+- **图片右键菜单**：`用 Anime Denoise 去噪` 以该图启动 GUI（所有系统已标记为
+  image 的类型 + avif / heic / heif）。
+
+安装包自带全部推理资产：`runtime/`（onnxruntime.dll + providers_shared + DirectML.dll）、
+`models/`（随包模型）、`assets/`（字体、图标、许可证）。**无需 Python、无需首次下载环境**。
+卸载只动安装目录；`%LOCALAPPDATA%\AnimeDenoise` 里的设置、日志、输出与已下载模型默认保留
+（交互式卸载会问一句要不要一起删）。
+
+## 命令行
+
+同目录下的 `anime-denoise.exe` 是独立 CLI（GUI 的全部引擎能力，无界面）：
+
+```bash
+anime-denoise photo.png                      # 默认 esrgan60_l0
+anime-denoise a.png b.png folder\ --method cugan60_l0
+anime-denoise x.png --out out\ --down 45 --l0 0.002 --device gpu
+anime-denoise x.png --all                    # 7 种方法 + 对比表 _sheet.png
+anime-denoise --download cugan               # 预下载可选模型权重
+type x.png | anime-denoise - --stdout > y.png   # 管道模式（stdin/stdout）
+anime-denoise in.png --json --quiet          # 机器可读：每完成一项输出一行 JSON
+```
+
+退出码：0 全部成功 / 1 参数或输入错 / 2 部分失败 / 3 引擎或环境不可用。
+完整契约见 `docs/cli-spec.md`。
 
 ## 从源码构建
 
@@ -44,8 +66,23 @@ mise run dist           # 打安装包到 dist/（需要 Inno Setup 6 的 ISCC.e
 捕获 vcvarsall 环境，不要求预置 Developer Command Prompt。`build/` 下同时产出 CLI 工具
 `anime-denoise.exe`（用法见 `docs/cli-spec.md`）与 GUI 的 `runtime/`、`models/` 副本。
 
+打包前置条件（一次性，产物进 `build/`）：`pwsh tools/fetch_deps.ps1` 下载钉版
+ONNX Runtime + DirectML DLL 和 esrgan 模型；`models/*.skel.onnx` 已入库（由
+`tools/export_onnx.py` 生成，改模型集时才需要重跑）。细节见 `installer/build_installer.ps1` 头注。
+
 `mise run assets` 从 `_dl/` 里的原始字体重新生成子集（HarmonyOS Sans 的 GB2312 子集、完整 Lucide 图标字体），
 `mise run check-fonts` 校验 `src/` 里出现的每个非 ASCII 字符都在 UI 字体里 —— 构建前的守门检查。
+
+## 模型
+
+| 模型 | 来源 | 随包 |
+|---|---|---|
+| ESRGAN anime-6B ×4 | `models/esrgan_anime6b_x4.onnx`（18 MB） | ✅ 随安装包 |
+| Real-CUGAN ×2 | `cugan_up2x_denoise3x.skel.onnx`（31 KB，入库） + `up2x-latest-denoise3x.pth` | 骨架随包，权重按需在设置页/`--download` 下载 |
+| APISR RRDB ×2 | `apisr_rrdb_x2.skel.onnx`（108 KB，入库） + `2x_APISR_RRDB_GAN_generator.pth` | 同上 |
+
+骨架是无权重的 ONNX 图，把上游 `.pth` 当 external data 读；下载落到
+`%LOCALAPPDATA%\AnimeDenoise\models` 并做 SHA-256 校验。整包模型权重不随安装包分发。
 
 ## 目录
 
