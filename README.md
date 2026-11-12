@@ -48,20 +48,30 @@ mise run dist           # 打安装包到 dist/（需要 Inno Setup 6 的 ISCC.e
 
 ```
 src/
-  main.c        界面与状态机（CUI）
-  backend.c     侧车进程桥：CreateProcessW + JSONL 协议
+  main.c        进程入口：窗口、事件循环、命令行
+  app.c         状态机：任务、worker 事件、意图、启动
+  ui_shell.c    顶栏 / 侧栏 / 缩略图条 / 状态行 / 对话框
+  ui_stage.c    画布：对比、笔刷、套索、缩放
+  chrome.c      自绘标题栏：命中测试、缩放光标、最大化
+  backend.c     侧车桥：进程、管道、读线程、协议派发
+  backend_json.c JSON / base64 / UTF-16 助手
+  loader.c      解码线程：解码 + 缩放 + 缩略图
   img.c         WIC 解码/编码/缩放/剪贴板
-  mask.c        保护蒙版：笔刷、套索、羽化、瓦片撤销、磁力套索
-  config.c      settings.json、日志轮转、崩溃报告、诊断包
-  runtime.c     uv → Python → PyTorch → 依赖 的首次运行装配
-  update.c      清单检查 / 下载 / 校验 / 调起安装包
-worker/worker.py 侧车：加载模型、去噪、合成保护区域、模型下载
-assets/fonts/    HarmonyOS Sans 子集 + 完整 Lucide（含许可证）
-assets/python/   随包分发的 denoise.py（MIT）
+  mask.c        蒙版：笔刷、套索、羽化、瓦片撤销、磁力套索
+  config.c      设置与路径
+  log.c         日志轮转 / 崩溃报告 / 诊断包
+  runtime.c     uv → Python → PyTorch 首次装配
+  update.c      更新状态机
+  update_io.c   WinHTTP / JSON / SHA-256
+  ui_tokens.h   视觉 token 单源
+worker/worker.py 侧车：模型、去噪、合成、模型下载
+assets/          字体子集、完整 Lucide、随包 denoise.py
 installer/       Inno Setup 脚本与打包脚本
-tools/           字体子集化与清单生成脚本
-tests/           各模块的独立测试程序
+docs/            design.md / visual-design.md / worker-protocol.md
+.context/        ADR / 当前状态 / 踩坑
+tests/           test-suite.md（行为规格）+ 各模块独立测试
 ```
+
 
 ## 协议
 
@@ -75,6 +85,13 @@ tests/           各模块的独立测试程序
 - 图标：Lucide，ISC。
 - UI 框架：CUI，MIT。
 - 第三方许可全文随安装包分发在 `assets/` 下。
+
+## 线程
+
+- UI 线程只做布局、贴图上传与状态迁移；worker 启动是异步的（`wb_start_async`），
+  窗口 0.8 s 内可用，启动期间任务停在「排队中」。
+- 图片解码在 `loader.c` 的线程里完成，UI 每帧只取结果并建纹理（实测 0.37 ms/张）。
+- 只有原生模态对话框会阻塞 UI。
 
 ## 性能与交互基准
 
