@@ -12,12 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* PNG decoding is CUI's job: src/cui_image.c embeds stb_image with
- * STB_IMAGE_STATIC, so stbi_* itself is not linkable, but the two wrappers
- * below are exported and do exactly what we need (PNG bytes -> RGBA8).
- * A standalone build (unit tests) can provide these symbols itself. */
-unsigned char *cui__png_decode(const unsigned char *data, int len, int *w, int *h);
-void cui__png_free(unsigned char *px);
+#include "img.h"
+
+/* Previews and composited results come back as base64 PNG; img.c decodes them
+ * through WIC, so this file needs no image decoder of its own. */
 
 #define WB_QUEUE_CAP 256
 #define WB_START_TIMEOUT_MS 180000
@@ -27,7 +25,7 @@ void cui__png_free(unsigned char *px);
 /* ------------------------------------------------------------------ state */
 
 typedef struct {
-    CRITICAL_SECTION lock;  /* queue + ready flags */
+    CRITICAL_SECTION lock;  /* queue + ready flags + boot state */
     CRITICAL_SECTION wlock; /* stdin writes */
     bool inited;
 
@@ -45,15 +43,18 @@ typedef struct {
     volatile LONG failed;   /* worker-level failure before/at ready */
     volatile LONG stopping; /* shutdown requested: do not report WB_EV_DEAD */
     bool started;
+    wb_state state;         /* boot progress (guarded by lock) */
 
     char device[32];
     char torch[64];
     char gpu[160];
+    char models_dir[1024]; /* UTF-8, where the ESRGAN weights live */
+    bool model_ready;
     char last_error[512];
     char log_path[1024]; /* UTF-8 */
-} wb_state;
+} wb_ctx;
 
-static wb_state g;
+static wb_ctx g;
 static int g_start_timeout_ms = WB_START_TIMEOUT_MS;
 
 /* ------------------------------------------------------------ byte buffer */
@@ -401,6 +402,11 @@ static bool wb__json_int(const char *json, const char *key, int *out) {
     return true;
 }
 
+static bool wb__json_bool(const char *json, const char *key) {
+    const char *p = wb__value_of(json, key);
+    return p && strncmp(p, "true", 4) == 0;
+}
+
 /* -------------------------------------------------------------- event queue */
 
 static void wb__set_error(const char *msg) {
@@ -408,11 +414,24 @@ static void wb__set_error(const char *msg) {
     snprintf(g.last_error, sizeof g.last_error, "%s", msg);
 }
 
+/* Boot state transitions. Every write happens under g.lock, like the queue. */
+static void wb__set_state(wb_state s) {
+    EnterCriticalSection(&g.lock);
+    g.state = s;
+    LeaveCriticalSection(&g.lock);
+}
+
+/* A boot event moves SPAWNING -> BOOTING; it never walks a live worker back. */
+static void wb__note_boot(void) {
+    EnterCriticalSection(&g.lock);
+    if (g.state == WB_STATE_SPAWNING) g.state = WB_STATE_BOOTING;
+    LeaveCriticalSection(&g.lock);
+}
+
 static void wb__push(wb_event *ev) {
     EnterCriticalSection(&g.lock);
     if (g.qcount == WB_QUEUE_CAP) {
         free(g.q[g.qhead].preview_b64);
-        free(g.q[g.qhead].src_preview_b64);
         memset(&g.q[g.qhead], 0, sizeof g.q[g.qhead]);
         g.qhead = (g.qhead + 1) % WB_QUEUE_CAP;
         g.qcount--;
@@ -428,7 +447,6 @@ static void wb__purge(void) {
     EnterCriticalSection(&g.lock);
     while (g.qcount) {
         free(g.q[g.qhead].preview_b64);
-        free(g.q[g.qhead].src_preview_b64);
         memset(&g.q[g.qhead], 0, sizeof g.q[g.qhead]);
         g.qhead = (g.qhead + 1) % WB_QUEUE_CAP;
         g.qcount--;
@@ -458,23 +476,48 @@ static void wb__handle_line(const char *json) {
         if (v < 0.0) v = 0.0;
         if (v > 1.0) v = 1.0;
         ev.value = (float)v;
+        wb__json_str_into(json, "stage", ev.stage, sizeof ev.stage);
+    } else if (strcmp(typebuf, "boot") == 0) {
+        double v = 0.0;
+        wb__json_number(json, "value", &v);
+        ev.type = WB_EV_BOOT;
+        if (v < 0.0) v = 0.0;
+        if (v > 1.0) v = 1.0;
+        ev.value = (float)v;
+        wb__json_str_into(json, "stage", ev.message, sizeof ev.message);
+        wb__note_boot();
     } else if (strcmp(typebuf, "ready") == 0) {
         ev.type = WB_EV_READY;
-        InterlockedExchange(&g.ready, 1);
         EnterCriticalSection(&g.lock);
         wb__json_str_into(json, "device", g.device, sizeof g.device);
         wb__json_str_into(json, "torch", g.torch, sizeof g.torch);
         wb__json_str_into(json, "gpu", g.gpu, sizeof g.gpu);
+        wb__json_str_into(json, "models_dir", g.models_dir, sizeof g.models_dir);
+        g.model_ready = wb__json_bool(json, "model_ready");
+        g.state = WB_STATE_READY;
+        ev.model_ready = g.model_ready;
         snprintf(ev.message, sizeof ev.message, "%s", g.gpu[0] ? g.gpu : g.device);
         LeaveCriticalSection(&g.lock);
+        InterlockedExchange(&g.ready, 1);
     } else if (strcmp(typebuf, "done") == 0) {
         ev.type = WB_EV_DONE;
         wb__json_str_into(json, "out", ev.path, sizeof ev.path);
         wb__json_int(json, "w", &ev.w);
         wb__json_int(json, "h", &ev.h);
         wb__json_int(json, "ms", &ev.ms);
+        ev.sr_cached = wb__json_bool(json, "sr_cached");
         ev.preview_b64 = wb__json_alloc_str(json, "preview_b64");
-        ev.src_preview_b64 = wb__json_alloc_str(json, "src_preview_b64");
+    } else if (strcmp(typebuf, "composited") == 0) {
+        ev.type = WB_EV_COMPOSITED;
+        wb__json_str_into(json, "out", ev.path, sizeof ev.path);
+        ev.preview_b64 = wb__json_alloc_str(json, "preview_b64");
+    } else if (strcmp(typebuf, "models") == 0) {
+        double b = 0.0;
+        wb__json_number(json, "bytes", &b);
+        ev.type = WB_EV_MODELS;
+        ev.bytes = (unsigned long long)(b < 0.0 ? 0.0 : b);
+        ev.model_ready = wb__json_bool(json, "ready");
+        wb__json_str_into(json, "path", ev.message, sizeof ev.message);
     } else if (strcmp(typebuf, "error") == 0) {
         ev.type = WB_EV_ERROR;
         wb__json_str_into(json, "message", ev.message, sizeof ev.message);
@@ -534,6 +577,7 @@ static DWORD WINAPI wb__reader_thread(LPVOID param) {
         ev.type = WB_EV_DEAD;
         snprintf(ev.message, sizeof ev.message, "worker exited");
         wb__push(&ev);
+        wb__set_state(WB_STATE_DEAD);
     }
     InterlockedExchange(&g.dead, 1);
     return 0;
@@ -543,6 +587,7 @@ static DWORD WINAPI wb__reader_thread(LPVOID param) {
 
 static bool wb__send(const char *json, size_t len) {
     HANDLE in;
+    if (!g.inited) return false;
     EnterCriticalSection(&g.lock);
     in = g.in;
     LeaveCriticalSection(&g.lock);
@@ -560,7 +605,11 @@ static bool wb__send(const char *json, size_t len) {
         }
         off += wrote;
     }
-    if (ok) FlushFileBuffers(in);
+    /* No FlushFileBuffers: on a pipe it waits until the child has read the bytes
+     * (measured 49-61 ms for the init line), which is exactly the block
+     * wb_start_async must not have. WriteFile hands the data to the pipe; a
+     * payload larger than the pipe buffer blocks on the reader draining it,
+     * which is the backpressure we want anyway. */
     LeaveCriticalSection(&g.wlock);
     if (!ok) wb__set_error("failed to write to the worker");
     return ok;
@@ -628,8 +677,8 @@ static void wb__teardown(void) {
 
 /* ------------------------------------------------------------------- API */
 
-bool wb_start(const char *python_exe, const char *worker_py, const char *venv_dir,
-              const char *models_dir) {
+bool wb_start_async(const char *python_exe, const char *worker_py, const char *venv_dir,
+                    const char *models_dir) {
     wchar_t *wpy = NULL, *wscript = NULL, tmp[MAX_PATH], logw[MAX_PATH + 64];
     wchar_t *cmd = NULL, *full_py = NULL, *full_script = NULL;
     HANDLE in_child = NULL, out_child = NULL, err_child = NULL;
@@ -641,7 +690,7 @@ bool wb_start(const char *python_exe, const char *worker_py, const char *venv_di
     bool ok = false;
 
     if (!python_exe || !worker_py) {
-        wb__set_error("wb_start: python_exe and worker_py are required");
+        wb__set_error("wb_start_async: python_exe and worker_py are required");
         return false;
     }
     if (!g.inited) {
@@ -658,6 +707,7 @@ bool wb_start(const char *python_exe, const char *worker_py, const char *venv_di
         g.ready = 0;
         g.failed = 0;
         g.stopping = 0;
+        g.state = WB_STATE_SPAWNING;
         g.last_error[0] = 0;
         g.device[0] = g.torch[0] = g.gpu[0] = 0;
     }
@@ -668,7 +718,7 @@ bool wb_start(const char *python_exe, const char *worker_py, const char *venv_di
     wpy = wb__u8_to_w(python_exe);
     wscript = wb__u8_to_w(worker_py);
     if (!wpy || !wscript) {
-        wb__set_error("wb_start: cannot convert paths to UTF-16");
+        wb__set_error("wb_start_async: cannot convert paths to UTF-16");
         goto done;
     }
 
@@ -690,11 +740,11 @@ bool wb_start(const char *python_exe, const char *worker_py, const char *venv_di
     }
 
     if (!wb__pipe(true, &out_child, &out_parent)) {
-        wb__set_error("wb_start: CreatePipe(stdout) failed");
+        wb__set_error("wb_start_async: CreatePipe(stdout) failed");
         goto done;
     }
     if (!wb__pipe(false, &in_child, &in_parent)) {
-        wb__set_error("wb_start: CreatePipe(stdin) failed");
+        wb__set_error("wb_start_async: CreatePipe(stdin) failed");
         goto done;
     }
 
@@ -722,7 +772,7 @@ bool wb_start(const char *python_exe, const char *worker_py, const char *venv_di
                                     &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         }
         if (!err_child) {
-            wb__set_error("wb_start: cannot open a stderr sink");
+            wb__set_error("wb_start_async: cannot open a stderr sink");
             goto done;
         }
     }
@@ -730,7 +780,7 @@ bool wb_start(const char *python_exe, const char *worker_py, const char *venv_di
     size_t cmd_cap = (wcslen(full_py ? full_py : wpy) + wcslen(full_script ? full_script : wscript)) * 2 + 64;
     cmd = (wchar_t *)malloc(cmd_cap * sizeof(wchar_t));
     if (!cmd) {
-        wb__set_error("wb_start: out of memory");
+        wb__set_error("wb_start_async: out of memory");
         goto done;
     }
     _snwprintf_s(cmd, cmd_cap, _TRUNCATE, L"\"%ls\" -u \"%ls\"", full_py ? full_py : wpy,
@@ -747,7 +797,7 @@ bool wb_start(const char *python_exe, const char *worker_py, const char *venv_di
     InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
     attrs = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, attr_size);
     if (!attrs || !InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size)) {
-        wb__set_error("wb_start: cannot build the handle inheritance list");
+        wb__set_error("wb_start_async: cannot build the handle inheritance list");
         goto done;
     }
     {
@@ -757,7 +807,7 @@ bool wb_start(const char *python_exe, const char *worker_py, const char *venv_di
         inherit[2] = err_child;
         if (!UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit,
                                        sizeof inherit, NULL, NULL)) {
-            wb__set_error("wb_start: UpdateProcThreadAttribute failed");
+            wb__set_error("wb_start_async: UpdateProcThreadAttribute failed");
             goto done;
         }
     }
@@ -767,7 +817,7 @@ bool wb_start(const char *python_exe, const char *worker_py, const char *venv_di
                         EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, NULL, NULL,
                         &si.StartupInfo, &pi)) {
         char msg[256];
-        snprintf(msg, sizeof msg, "wb_start: CreateProcess failed (error %lu)", GetLastError());
+        snprintf(msg, sizeof msg, "wb_start_async: CreateProcess failed (error %lu)", GetLastError());
         wb__set_error(msg);
         goto done;
     }
@@ -791,7 +841,7 @@ bool wb_start(const char *python_exe, const char *worker_py, const char *venv_di
     err_child = NULL;
 
     if (!g.thread) {
-        wb__set_error("wb_start: CreateThread failed");
+        wb__set_error("wb_start_async: CreateThread failed");
         goto done;
     }
 
@@ -811,41 +861,14 @@ bool wb_start(const char *python_exe, const char *worker_py, const char *venv_di
         bool sent = b.p && wb__send(b.p, b.len);
         wb__buf_free(&b);
         if (!sent) {
-            wb__set_error("wb_start: cannot send init");
+            wb__set_error("wb_start_async: cannot send init");
             goto done;
         }
     }
 
-    {
-        ULONGLONG t0 = GetTickCount64();
-        for (;;) {
-            /* the ready event stays queued for the UI; readiness itself is a flag so
-             * a concurrent wb_poll() cannot steal it from under us */
-            if (g.ready) {
-                ok = true;
-                break;
-            }
-            if (g.failed) {
-                char msg[512];
-                const char *why = g.last_error[0] ? g.last_error : "worker exited before signalling ready";
-                snprintf(msg, sizeof msg, "worker not ready: %s", why);
-                wb__set_error(msg);
-                break;
-            }
-            if (!wb_alive()) {
-                wb__set_error("worker exited before signalling ready");
-                break;
-            }
-            if (GetTickCount64() - t0 > (ULONGLONG)g_start_timeout_ms) {
-                char msg[128];
-                snprintf(msg, sizeof msg, "worker did not become ready within %d s",
-                         g_start_timeout_ms / 1000);
-                wb__set_error(msg);
-                break;
-            }
-            Sleep(20);
-        }
-    }
+    /* No wait here: ready arrives on the reader thread and wb_poll()/wb_state_get()
+     * observe it. Blocking here is what froze the UI (LESSONS L-002). */
+    ok = true;
 
 done:
     if (attrs) {
@@ -865,15 +888,70 @@ done:
     if (!ok) {
         InterlockedExchange(&g.stopping, 1);
         wb__teardown();
+        wb__set_state(WB_STATE_IDLE);
     }
     return ok;
+}
+
+/* Waits for the worker's ready flag. Readiness is a flag rather than a queue peek
+ * so a concurrent wb_poll() cannot steal the event from under us; the event itself
+ * stays queued for the caller. */
+static bool wb__wait_ready(void) {
+    ULONGLONG t0 = GetTickCount64();
+    bool ok = false;
+    for (;;) {
+        if (g.ready) {
+            ok = true;
+            break;
+        }
+        if (g.failed) {
+            char msg[512];
+            const char *why = g.last_error[0] ? g.last_error : "worker exited before signalling ready";
+            snprintf(msg, sizeof msg, "worker not ready: %s", why);
+            wb__set_error(msg);
+            break;
+        }
+        if (!wb_alive()) {
+            wb__set_error("worker exited before signalling ready");
+            break;
+        }
+        if (GetTickCount64() - t0 > (ULONGLONG)g_start_timeout_ms) {
+            char msg[128];
+            snprintf(msg, sizeof msg, "worker did not become ready within %d s",
+                     g_start_timeout_ms / 1000);
+            wb__set_error(msg);
+            break;
+        }
+        Sleep(20);
+    }
+    if (!ok) {
+        InterlockedExchange(&g.stopping, 1);
+        wb__teardown();
+        wb__set_state(WB_STATE_IDLE);
+    }
+    return ok;
+}
+
+bool wb_start(const char *python_exe, const char *worker_py, const char *venv_dir,
+              const char *models_dir) {
+    if (!wb_start_async(python_exe, worker_py, venv_dir, models_dir)) return false;
+    return wb__wait_ready();
+}
+
+wb_state wb_state_get(void) {
+    wb_state s;
+    if (!g.inited) return WB_STATE_IDLE;
+    EnterCriticalSection(&g.lock);
+    s = g.state;
+    LeaveCriticalSection(&g.lock);
+    return s;
 }
 
 void wb_set_start_timeout(int ms) {
     if (ms > 0) g_start_timeout_ms = ms;
 }
 
-void wb_push_denoise(int id, const char *path, double scale, double l0, const char *out_dir) {
+void wb_push_denoise(int id, const char *path, int down_pct, double l0, const char *out_path) {
     wb_buf b = {0};
     char num[64];
     wb__buf_puts(&b, "{\"cmd\":\"denoise\",\"id\":");
@@ -881,20 +959,46 @@ void wb_push_denoise(int id, const char *path, double scale, double l0, const ch
     wb__buf_puts(&b, num);
     wb__buf_puts(&b, ",\"path\":\"");
     wb__json_escape(&b, path ? path : "");
-    wb__buf_puts(&b, "\",\"scale\":");
-    snprintf(num, sizeof num, "%g", scale);
+    wb__buf_puts(&b, "\",\"down_pct\":");
+    snprintf(num, sizeof num, "%d", down_pct);
     wb__buf_puts(&b, num);
     wb__buf_puts(&b, ",\"l0\":");
-    snprintf(num, sizeof num, "%g", l0);
+    snprintf(num, sizeof num, "%.6g", l0);
     wb__buf_puts(&b, num);
-    wb__buf_puts(&b, ",\"out_dir\":\"");
-    wb__json_escape(&b, out_dir ? out_dir : "");
-    wb__buf_puts(&b, "\",\"preview_b64\":true}\n");
+    wb__buf_puts(&b, ",\"out\":\"");
+    wb__json_escape(&b, out_path ? out_path : "");
+    wb__buf_puts(&b, "\"}\n");
+    if (b.p) wb__send(b.p, b.len);
+    wb__buf_free(&b);
+}
+
+void wb_push_composite(int id, const char *mask_png_b64, const char *out_path) {
+    wb_buf b = {0};
+    char num[64];
+    wb__buf_puts(&b, "{\"cmd\":\"composite\",\"id\":");
+    snprintf(num, sizeof num, "%d", id);
+    wb__buf_puts(&b, num);
+    wb__buf_puts(&b, ",\"mask_b64\":\"");
+    wb__buf_puts(&b, mask_png_b64 ? mask_png_b64 : "");
+    wb__buf_puts(&b, "\",\"out\":\"");
+    wb__json_escape(&b, out_path ? out_path : "");
+    wb__buf_puts(&b, "\"}\n");
+    if (b.p) wb__send(b.p, b.len);
+    wb__buf_free(&b);
+}
+
+void wb_models(const char *action) {
+    if (!g.inited) return;
+    wb_buf b = {0};
+    wb__buf_puts(&b, "{\"cmd\":\"models\",\"action\":\"");
+    wb__json_escape(&b, action && *action ? action : "status");
+    wb__buf_puts(&b, "\"}\n");
     if (b.p) wb__send(b.p, b.len);
     wb__buf_free(&b);
 }
 
 void wb_cancel(int id) {
+    if (!g.inited) return;
     char line[64];
     snprintf(line, sizeof line, "{\"cmd\":\"cancel\",\"id\":%d}\n", id);
     wb__send(line, strlen(line));
@@ -903,27 +1007,35 @@ void wb_cancel(int id) {
 void wb_shutdown(void) {
     static const char line[] = "{\"cmd\":\"shutdown\"}\n";
     bool started;
+    if (!g.inited) return;
     EnterCriticalSection(&g.lock);
     started = g.started;
     LeaveCriticalSection(&g.lock);
-    if (!started) return;
+    if (!started) {
+        wb__set_state(WB_STATE_IDLE);
+        return;
+    }
     InterlockedExchange(&g.stopping, 1);
     wb__send(line, sizeof line - 1);
     wb__teardown();
+    wb__set_state(WB_STATE_IDLE);
 }
 
 void wb_kill(void) {
     HANDLE proc;
+    if (!g.inited) return;
     EnterCriticalSection(&g.lock);
     proc = g.proc;
     LeaveCriticalSection(&g.lock);
     if (!proc) {
         wb__teardown();
+        wb__set_state(WB_STATE_IDLE);
         return;
     }
     TerminateProcess(proc, 0);
     WaitForSingleObject(proc, 2000);
     wb__teardown();
+    wb__set_state(WB_STATE_IDLE);
 }
 
 int wb_poll(wb_event *ev) {
@@ -944,6 +1056,7 @@ int wb_poll(wb_event *ev) {
 
 bool wb_alive(void) {
     HANDLE proc;
+    if (!g.inited) return false;
     EnterCriticalSection(&g.lock);
     proc = g.proc;
     LeaveCriticalSection(&g.lock);
@@ -955,8 +1068,6 @@ void wb_event_free(wb_event *ev) {
     if (!ev) return;
     free(ev->preview_b64);
     ev->preview_b64 = NULL;
-    free(ev->src_preview_b64);
-    ev->src_preview_b64 = NULL;
 }
 
 /* ------------------------------------------------------------ base64/PNG */
@@ -1001,26 +1112,30 @@ int wb_decode_preview(const char *b64, unsigned char **rgba, int *w, int *h) {
     size_t n = 0;
     unsigned char *png = wb__b64_decode(b64, &n);
     if (!png) return 0;
-    if (n == 0 || n > 0x7FFFFFFFu) {
-        free(png);
-        return 0;
-    }
-    int iw = 0, ih = 0;
-    unsigned char *px = cui__png_decode(png, (int)n, &iw, &ih);
+    img_pixels px = {0};
+    bool ok = n > 0 && img_decode_memory(png, n, &px);
     free(png);
-    if (!px || iw <= 0 || ih <= 0) {
-        if (px) cui__png_free(px);
-        return 0;
-    }
-    *rgba = px;
-    *w = iw;
-    *h = ih;
+    if (!ok) return 0;
+    *rgba = px.rgba;
+    *w = px.w;
+    *h = px.h;
     return 1;
 }
 
 void wb_free_pixels(unsigned char *rgba) {
-    if (rgba) cui__png_free(rgba);
+    free(rgba);
 }
+
+bool wb_model_ready(void) {
+    bool v;
+    if (!g.inited) return false;
+    EnterCriticalSection(&g.lock);
+    v = g.model_ready;
+    LeaveCriticalSection(&g.lock);
+    return v;
+}
+
+const char *wb_models_dir(void) { return g.models_dir; }
 
 const char *wb_device(void) { return g.device; }
 const char *wb_torch(void) { return g.torch; }

@@ -1,0 +1,49 @@
+Anime Denoise — third-party notices
+===================================
+
+This program bundles the following third-party components. Their full license
+texts ship alongside them in the installed assets folder.
+
+1. gpt-anime-denoise (denoising pipeline: Real-ESRGAN upscaling + L0 smoothing)
+   Location : assets/python/denoise.py
+   License  : MIT, Copyright (c) 2026 CXP-2024
+   License  : assets/python/LICENSE-gpt-anime-denoise.txt
+   Source   : https://github.com/CXP-2024/gpt-anime-denoise
+
+2. RealESRGAN_x4plus_anime_6B.pth (model weights, downloaded on first run)
+   License  : BSD-3-Clause, Copyright (c) 2021, Xintao Wang
+   Source   : https://github.com/xinntao/Real-ESRGAN
+   The weights are not redistributed with this program; the app downloads them
+   from the upstream release and verifies the SHA-256 published in denoise.py.
+
+3. CUI (immediate-mode UI framework)
+   License  : MIT
+   Source   : https://github.com/yappologistic/CUI
+   Copyright (c) CUI contributors.
+
+4. Lucide icons
+   Location : assets/fonts/lucide.ttf
+   License  : ISC
+   License  : assets/fonts/LICENSE-Lucide.txt
+   Source   : https://lucide.dev
+
+5. HarmonyOS Sans SC (Regular and Medium, GB2312 subset)
+   Location : assets/fonts/HarmonyOS-Sans-SC-*.ttf
+   License  : HarmonyOS Sans Fonts License Agreement, Copyright 2021 Huawei
+              Device Co., Ltd. Redistributed unmodified apart from the glyph
+              subset; not sold or distributed on a stand-alone basis.
+   License  : assets/fonts/LICENSE-HarmonyOS-Sans.txt
+
+6. PyTorch, torchvision, spandrel, numpy, Pillow, psutil (installed on first run
+   into %LOCALAPPDATA%\AnimeDenoise\runtime)
+   Licenses : BSD-3-Clause (PyTorch, torchvision, numpy), MIT (spandrel, Pillow),
+              BSD-3-Clause (psutil)
+   These are downloaded from their official indexes at runtime, not bundled.
+
+7. uv (Python package manager, downloaded on first run)
+   License  : MIT or Apache-2.0
+   Source   : https://github.com/astral-sh/uv
+
+8. Inno Setup (installer runtime)
+   License  : Inno Setup License (free to use, including commercial)
+   Source   : https://jrsoftware.org/isinfo.php

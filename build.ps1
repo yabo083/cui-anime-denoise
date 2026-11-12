@@ -1,7 +1,7 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-    Configure and build denoise_app (Ninja single-config, Release by default).
+    Configure and build AnimeDenoise (Ninja single-config, Release by default).
 
 .DESCRIPTION
     Activates the MSVC x64 toolchain through toolchain.ps1, configures with CMake if the
@@ -48,7 +48,7 @@ if ($needConfigure) {
 cmake --build $buildDir
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$exe = Join-Path $buildDir 'denoise_app.exe'
+$exe = Join-Path $buildDir 'AnimeDenoise.exe'
 if (-not (Test-Path -LiteralPath $exe)) { throw "Build reported success but '$exe' is missing." }
 
 $size = [math]::Round((Get-Item -LiteralPath $exe).Length / 1KB)

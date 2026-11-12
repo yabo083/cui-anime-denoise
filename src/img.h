@@ -48,6 +48,11 @@ void img_free(img_pixels *p);
 bool img_encode_png(const char *utf8_path, const img_pixels *p);
 bool img_encode_jpeg(const char *utf8_path, const img_pixels *p, int quality);
 
+/* Encode into a malloc'ed buffer instead of a file (caller free()s). Used for
+ * the clipboard's CF_PNG and for shipping masks to the worker without disk. */
+bool img_encode_png_memory(const img_pixels *p, void **out, size_t *size);
+bool img_encode_jpeg_memory(const img_pixels *p, int quality, void **out, size_t *size);
+
 /* High-quality resize (WIC Fant / cubic) to an exact size; `out` must be
  * empty. Returns false on bad input. */
 bool img_resize(const img_pixels *src, int w, int h, img_pixels *out);

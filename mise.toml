@@ -1,0 +1,35 @@
+# Toolchain for this repo, all managed by mise (https://mise.jdx.dev).
+# `cd` into the repo and mise switches to these versions; the agent shell does
+# not run the activation hook, so scripts use `mise exec -- …` explicitly.
+[tools]
+python = "3.14.9"
+node = "24.22.1"
+uv = "0.13.4"
+
+[tasks.build]
+description = "Configure and build the Release build with MSVC + Ninja"
+run = "pwsh -NoProfile -File build.ps1"
+
+[tasks.run]
+description = "Build, then start the app"
+run = "pwsh -NoProfile -File build.ps1 -Run"
+
+[tasks.clean]
+description = "Remove the build directory and rebuild"
+run = "pwsh -NoProfile -File build.ps1 -Clean"
+
+[tasks.assets]
+description = "Regenerate the bundled fonts from the cached sources in _dl/"
+run = "uv run --with fonttools --with brotli python tools/gen_assets.py --models-dir _dl"
+
+[tasks.check-fonts]
+description = "Verify every non-ASCII character in src/ exists in the UI font"
+run = "uv run --with fonttools python tools/gen_assets.py --check"
+
+[tasks.dist]
+description = "Build the Inno Setup installer into dist/"
+run = "pwsh -NoProfile -File installer/build_installer.ps1 -Version ${VERSION:-1.1.0}"
+
+[tasks.worker-smoke]
+description = "Run the Python worker protocol smoke test"
+run = "uv run --project _dl/pyenv python tests/smoke_worker.py"

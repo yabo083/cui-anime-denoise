@@ -28,3 +28,9 @@ desktop.ini
 # Downloads and scratch
 _dl/
 _tools/
+
+# Installer output
+dist/
+
+# Per-agent build directories
+build_*/

@@ -1,0 +1,44 @@
+/* Custom window chrome.
+ *
+ * The app draws its own title bar, so the native caption is removed: the client
+ * area covers the whole window and the top strip behaves like a caption
+ * (drag, double-click to maximize, resize handles on the edges).
+ *
+ * Implemented by subclassing the window procedure CUI installs: WM_NCCALCSIZE
+ * reports an empty non-client area (the work area when maximized), WM_NCHITTEST
+ * claims the top strip and the resize borders in screen coordinates,
+ * WM_SETCURSOR sets the size cursors CUI would otherwise overwrite, and
+ * everything else is forwarded to the original procedure.
+ */
+#ifndef CHROME_H
+#define CHROME_H
+
+#include <stdbool.h>
+
+/* `title_height` is in logical points: it is scaled by the window DPI here, so
+ * the C declaration and the WM_NCHITTEST math agree at every scale factor. */
+void chrome_attach(void *hwnd, float title_height_points);
+
+/* Window commands, for the buttons the app draws. */
+void chrome_minimize(void);
+void chrome_toggle_maximize(void);
+void chrome_close(void);
+bool chrome_is_maximized(void);
+
+/* Width the app must reserve at the right end of its title bar for the
+ * min/max/close buttons, in logical points. Mirrors UI_CAPTION_BUTTONS. */
+float chrome_buttons_width(void);
+
+/* True when (x, y) is inside the right-hand title-bar strip that holds the
+ * app's own buttons. Coordinates are logical points inside the client area --
+ * the same space as cui_mouse_pos() -- so the UI can suppress its own hover
+ * feedback where CUI already owns the pointer. */
+bool chrome_button_at(int x, int y);
+
+/* Dark caption for the few pixels DWM still draws (maximized border). */
+void chrome_set_dark(bool dark);
+
+/* True while the pointer is over the window (for hover styling). */
+bool chrome_is_active(void);
+
+#endif /* CHROME_H */

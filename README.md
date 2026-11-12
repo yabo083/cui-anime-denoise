@@ -1,91 +1,84 @@
-# cui-anime-denoise
+# Anime Denoise
 
-Windows desktop tool that strips screen-tone moiré ("鱼鳞纹") from AI-generated anime art.
-The UI is native C drawn by [CUI](https://github.com/yappologistic/CUI); image work runs in
-a Python sidecar that wraps the `gpt-anime-denoise` denoiser.
+原生 Windows 桌面版 GPT 二次元图去噪工具。界面用 [CUI](https://github.com/yappologistic/CUI)（即时模式 UI，C）绘制，
+推理交给一个 Python 侧车进程（`worker/worker.py`），去噪算法来自 [gpt-anime-denoise](https://github.com/CXP-2024/gpt-anime-denoise)（MIT）。
 
-## Status
+所有处理都在本机完成，不上传任何图片。
 
-Working v1: drop or browse images → serial denoise queue → before/after compare →
-PNG output in `outputs/` (next to the exe). GPU badge, per-item cancel, worker-crash
-restart, strength presets (Soft/Balanced/Strong) plus Scale %/L0 sliders.
-Brush/lasso masking is not implemented (`# TODO mask` in `src/main.c`).
+## 功能
 
-## Architecture
+- **去噪**：三档预设（轻柔 80% / 推荐 60% / 强力 45%）+ 预缩比例与 L0 平滑两个滑块；每张图记住自己的参数，
+  改了参数会提示「用新参数重新去噪」。
+- **局部保护**：笔刷 / 橡皮 / 磁力套索，柔边自动过渡，撤销重做（Ctrl+Z / Ctrl+Shift+Z）。
+  涂过的地方恢复原图，其余保持去噪结果；成品另存为 `…_protected.png`。
+- **对比视图**：左右可拖动分隔线，`1/2/3` 切换对比 / 原图 / 结果，按住 `Z` 临时看原图，按住 `M` 看保护区域。
+- **多图**：拖入、`Ctrl+O` 选择、`Ctrl+V` 粘贴，缩略图条 + 左右方向键切换。
+- **缩放**：滚轮以外的 `Ctrl+=` / `Ctrl+-`、`F` 适合窗口、`0` 1:1。
+- **输出**：自动写入输出目录，`Ctrl+S` 另存为；透明通道保留。
+- 浅色 / 深色 / 跟随系统主题；中文界面，HarmonyOS Sans 字体，Lucide 图标。
+- 自更新（清单 JSON + SHA-256 校验 + Inno Setup 静默升级）、日志轮转、崩溃报告、诊断包导出。
 
-```
-┌─────────────────────────────┐   JSON Lines over stdio    ┌──────────────────────────┐
-│ denoise_app.exe             │ ─────────────────────────► │ Python worker sidecar    │
-│  CUI (immediate-mode UI, C) │ ◄───────────────────────── │  torch + denoise.py      │
-│  src/main.c, src/backend.c  │  stdout: one JSON per line │  (RTX 5060 Ti / CUDA)    │
-└─────────────────────────────┘                            └──────────────────────────┘
-```
+## 安装
 
-- **Front end** — `src/main.c` describes the window every frame with CUI components. No
-  widget tree, no retainer; a panel is a function call.
-- **Bridge** — `src/backend.c` spawns the worker with `CreateProcessW` and anonymous pipes,
-  writes commands to its stdin and drains its stdout on a reader thread into a locked queue.
-  Paths travel as UTF-8; `backend.h` exposes `wb_start / wb_push_denoise / wb_cancel /
-  wb_poll / wb_shutdown / wb_kill`.
-- **Worker** — a Python script that imports `denoise` from `E:\AI\gpt-anime-denoise`,
-  loads the ESRGAN model once, and answers each command with progress then a result.
+`dist/AnimeDenoise-<版本>-setup.exe` 是每用户安装（无需管理员），默认装到
+`%LOCALAPPDATA%\Programs\AnimeDenoise`。
 
-Protocol (one JSON object per line, stderr left for worker logs):
+安装包本身约 4.6 MB：程序、worker 脚本、字体、图标。**AI 运行环境不随包分发**，首次启动时应用会
+调用 [uv](https://github.com/astral-sh/uv) 在 `%LOCALAPPDATA%\AnimeDenoise\runtime` 里装 Python 3.12 +
+PyTorch（NVIDIA 卡自动选 CUDA 版，否则 CPU 版）+ 去噪依赖，约 2 GB，只需一次。
 
-| App → worker | Reply |
-| --- | --- |
-| `{"cmd":"init","venv_dir":…,"device":"auto","models_dir":null}` | `{"type":"ready","device":"cuda","torch":…,"gpu":…}` |
-| `{"cmd":"denoise","id":N,"path":…,"scale":0.6,"l0":0.001,"out_dir":…,"preview_b64":true}` | `{"type":"progress","id":N,"value":0.42}` … `{"type":"done","id":N,"out":…,"preview_b64":…,"w":…,"h":…,"ms":…}` |
-| `{"cmd":"cancel","id":N}` | `{"type":"cancelled","id":N}` |
-| `{"cmd":"shutdown"}` | `{"type":"bye"}`, then exit |
+## 从源码构建
 
-The worker calls `denoise.sr_at(...)` and `denoise.l0_smooth(...)` directly (not `denoise.run`,
-whose `lam`/`stop` arguments cannot be wired through), patching `denoise.DOWN` around the call.
-`done` carries `preview_b64` (result) and `src_preview_b64` (source, for formats CUI cannot load).
-## Build
+工具链全部由 [mise](https://mise.jdx.dev) 管理，见 `mise.toml`：
 
-Requirements: Visual Studio with the C++ x64 toolset (MSVC 14.44 here), and PowerShell 7.
-`toolchain.ps1` finds both itself — nothing needs to be on `PATH` and no
-"Developer Command Prompt" is needed.
-
-```powershell
-pwsh -NoProfile -File build.ps1          # Release, Ninja, into build\
-pwsh -NoProfile -File build.ps1 -Run     # build, then start the window
-pwsh -NoProfile -File build.ps1 -Clean -Config Debug
+```bash
+mise install            # python / node / uv
+mise run build          # Release，产物 build/AnimeDenoise.exe
+mise run run            # 构建并启动
+mise run dist           # 打安装包到 dist/（需要 Inno Setup 6 的 ISCC.exe）
 ```
 
-Result: `build\denoise_app.exe` (290 KB, Release).
+构建需要 Visual Studio 的 C++ x64 工具集与 PowerShell 7；`build.ps1` 通过 `toolchain.ps1` 自己
+捕获 vcvarsall 环境，不要求预置 Developer Command Prompt。
 
-`toolchain.ps1` can also be dot-sourced into an existing session (`. .\toolchain.ps1`), or run
-on its own to print the compilers it resolved. From a POSIX shell (git-bash), call
-`pwsh -NoProfile -File build.ps1`; do not try to import the MSVC environment into bash — the
-captured `PATH` holds Windows entries that bash will not resolve.
+`mise run assets` 从 `_dl/` 里的原始字体重新生成子集（HarmonyOS Sans 的 GB2312 子集、完整 Lucide 图标字体），
+`mise run check-fonts` 校验 `src/` 里出现的每个非 ASCII 字符都在 UI 字体里 —— 构建前的守门检查。
 
-How it activates MSVC: `vcvarsall.bat` is a `cmd.exe` script whose environment dies with the
-process, so `toolchain.ps1` runs one `cmd /c "call vcvarsall.bat x64 && set"`, then copies
-every `NAME=VALUE` line into the PowerShell process environment. CMake and Ninja come from
-the copies shipped with Visual Studio.
-
-## Directory layout
+## 目录
 
 ```
-cui-anime-denoise/
-├─ CMakeLists.txt        top-level build: vendored CUI + denoise_app
-├─ build.ps1             one-command configure + build (Ninja, single config)
-├─ toolchain.ps1         MSVC x64 detection/activation, PATH for cmake + ninja
-├─ src/
-│  ├─ main.c             CUI window and (next) the denoise panel
-│  ├─ backend.h/.c       worker process bridge: spawn, JSONL, event queue
-├─ worker/               Python sidecar (JSONL worker script)
-├─ third_party/CUI/      vendored CUI 1.4.0 (git history and docs screenshots removed)
-├─ build/                CMake + Ninja output (ignored)
-├─ outputs/              denoised PNGs and previews (ignored)
-└─ tmp/                  scratch scripts (ignored)
+src/
+  main.c        界面与状态机（CUI）
+  backend.c     侧车进程桥：CreateProcessW + JSONL 协议
+  img.c         WIC 解码/编码/缩放/剪贴板
+  mask.c        保护蒙版：笔刷、套索、羽化、瓦片撤销、磁力套索
+  config.c      settings.json、日志轮转、崩溃报告、诊断包
+  runtime.c     uv → Python → PyTorch → 依赖 的首次运行装配
+  update.c      清单检查 / 下载 / 校验 / 调起安装包
+worker/worker.py 侧车：加载模型、去噪、合成保护区域、模型下载
+assets/fonts/    HarmonyOS Sans 子集 + 完整 Lucide（含许可证）
+assets/python/   随包分发的 denoise.py（MIT）
+installer/       Inno Setup 脚本与打包脚本
+tools/           字体子集化与清单生成脚本
+tests/           各模块的独立测试程序
 ```
 
-## Notes
+## 协议
 
-- `third_party/CUI` is a plain copy of the upstream tree with `.git` and `docs/images`
-  removed; it is treated as read-only.
-- The build is warning-clean for project sources. MSVC prints `D9025 (/W3 overridden by /W4)`
-  for CUI's own files — that comes from CUI's CMakeLists, not from this project.
+侧车与本程序之间是「一行一个 JSON」的 stdio 协议，见 `docs/worker-protocol.md`。
+
+## 许可
+
+- 本程序：仓库内 LICENSE。
+- `assets/python/denoise.py`：MIT，© CXP-2024。
+- 字体：HarmonyOS Sans（华为设备有限公司授权，见 `assets/fonts/LICENSE-HarmonyOS-Sans.txt`）。
+- 图标：Lucide，ISC。
+- UI 框架：CUI，MIT。
+- 第三方许可全文随安装包分发在 `assets/` 下。
+
+## 性能与交互基准
+
+性能回归由 `lab/测试工程` 覆盖：13 个场景 × 1000 次迭代，外加 7 项交互断言，
+产物是 `lab/测试工程/report/latest/report.md`（含环境、方法、逐场景 p50/p95/p99 与判定）。
+它抓到并推动修掉了一个真实问题：笔刷涂抹时每帧重算整张蒙版羽化，帧成本 5.8 ms，
+改为 40 ms 节流后降到 0.04 ms。
