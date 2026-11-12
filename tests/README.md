@@ -53,3 +53,27 @@ application needs.
 
 See the header comment of `tests/test_backend.c` for the worker-side driver
 (`test_backend.exe [python.exe] [worker.py] [venv_dir] [image]`).
+
+## test_config.c — settings, log, crash handler, diagnostics
+
+The driver links the two halves of the config module (`src/config.c` for the
+settings and paths, `src/log.c` for the rotating log, the crash report and the
+diagnostics zip):
+
+```
+pwsh -NoProfile -Command ". .\toolchain.ps1 -Quiet;
+  New-Item -ItemType Directory -Force tmp\configbuild | Out-Null;
+  cl /nologo /utf-8 /W4 /O2 /I src /c tests\test_config.c /Fo:tmp\configbuild\test_config.obj;
+  cl /nologo /utf-8 /W4 /O2 /I src /c src\config.c      /Fo:tmp\configbuild\config.obj;
+  cl /nologo /utf-8 /W4 /O2 /I src /c src\log.c         /Fo:tmp\configbuild\log.obj;
+  link /nologo tmp\configbuild\test_config.obj tmp\configbuild\config.obj tmp\configbuild\log.obj
+    ole32.lib shell32.lib advapi32.lib user32.lib gdi32.lib
+    /OUT:tmp\configbuild\test_config.exe"
+tmp\configbuild\test_config.exe
+```
+
+Started from the repository root. The run is hermetic: it points
+`ANIME_DENOISE_DATA_DIR` at `<exe dir>\cfgtest` and deletes that tree on exit.
+The diagnostics case shells out to `python` (`zipfile.testzip()`), so a Python
+on `PATH` is required; the crash case re-launches the same executable with
+`--crash-child` and expects exit code `0xC0000005`.

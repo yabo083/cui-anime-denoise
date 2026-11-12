@@ -96,6 +96,8 @@ void ui_topbar(cui_ctx *ui, app_state *st) {
                 st->set.theme_mode = mode;
                 if (mode == 0) { cui_app_follow_system_theme(NULL, true); }
                 else { cui_app_follow_system_theme(NULL, false); cui_set_theme(ui, mode == 1 ? CUI_THEME_LIGHT : CUI_THEME_DARK); }
+                /* the DWM caption/border follows the app theme too */
+                chrome_set_dark(cui_get_theme_mode(ui) == CUI_THEME_DARK);
                 cfg_save(&st->set);
             }
             cui_separator(ui);
@@ -121,32 +123,12 @@ void ui_topbar(cui_ctx *ui, app_state *st) {
 /* ------------------------------------------------------------------------ */
 
 void ui_job_header(cui_ctx *ui, app_state *st, job *j) {
-    char meta[192] = "";
-    if (j->status == JOB_DONE) {
-        char when[32], l0[16];
-        fmt_ms(j->ms, when, sizeof when);
-        fmt_l0(j->res_l0, l0, sizeof l0);
-        snprintf(meta, sizeof meta, "%d × %d · %s · 预缩 %d%% · L0 %s%s",
-                 j->orig.w, j->orig.h, when, j->res_down_pct, l0, j->sr_cached ? " · 复用超分" : "");
-    } else if (j->status == JOB_RUNNING) {
-        const char *phase = j->phase[0] ? j->phase : "处理中";
-        if (strcmp(phase, "upscale") == 0) phase = "超分辨率重建";
-        else if (strcmp(phase, "smooth") == 0) phase = "L0 平滑";
-        else if (strcmp(phase, "decode") == 0) phase = "解码";
-        else if (strcmp(phase, "encode") == 0) phase = "写入 PNG";
-        else if (strcmp(phase, "composite") == 0) phase = "合成保护区域";
-        char l0[16];
-        fmt_l0(j->l0, l0, sizeof l0);
-        snprintf(meta, sizeof meta, "%s · 预缩 %d%% · L0 %s", phase, j->down_pct, l0);
-    }
-
     cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER, .height = CUI_PX(UI_HEAD)) {
         cui_text(ui, j->name, .font = CUI_FONT_MEDIUM, .size = UI_FS_TITLE, .nowrap = true);
         cui_badge(ui, status_label(j->status), .tone = status_tone(j->status), .size = CUI_SIZE_SM,
                   .dot = j->status == JOB_RUNNING);
         if (j->mask_active) cui_badge(ui, "局部保护", .size = CUI_SIZE_SM, .tone = CUI_TONE_WARNING,
                                       .icon = CUI_ICON_SHIELD);
-        cui_text(ui, meta, .size = UI_FS_CAPTION, .nowrap = true, .color = CUI_COLOR_TEXT_MUTED);
         cui_spacer(ui);
 
         if (j->status == JOB_RUNNING && !j->cancel_sent) {
@@ -205,7 +187,7 @@ static void ui_queue_row(cui_ctx *ui, app_state *st, int index) {
     co.pad = 7;                 /* card padding, docs/design.md §4.4 (no token) */
     co.width = CUI_FILL;
     co.hoverable = true;
-    co.selected = selected;
+    co.muted = selected;   /* selection reads as a surface change, not a red frame */
     bool clicked = cui_card_begin(ui, &co);
 
     /* 40pt list thumb: no token covers it; UI_TILE is the strip/big tile */
@@ -243,6 +225,64 @@ static void ui_queue_row(cui_ctx *ui, app_state *st, int index) {
     }
 }
 
+/* Slider row: label left, value right, neutral track; the accent appears only
+ * while the handle is under the pointer. CUI's own slider paints the fill in
+ * the accent colour, which turned the whole sidebar red. */
+typedef struct slider_ctx {
+    float *value;
+    float lo, hi, step;
+    const char *fmt;
+    bool dragging;
+} slider_ctx;
+
+static void slider_paint(cui_ctx *ui, cui_rect r, void *user) {
+    slider_ctx *sc = (slider_ctx *)user;
+    float t = (*sc->value - sc->lo) / (sc->hi - sc->lo);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    const float inset = 6.0f, track_h = 4.0f;
+    float x0 = r.x + inset, x1 = r.x + r.w - inset;
+    float y = r.y + (r.h - track_h) * 0.5f;
+    cui_draw_rect(ui, (cui_rect){ x0, y, x1 - x0, track_h }, CUI_CORNERS(2.0f), CUI_COLOR_BORDER);
+    float handle_x = x0 + (x1 - x0) * t;
+    cui_draw_rect(ui, (cui_rect){ x0, y, handle_x - x0, track_h }, CUI_CORNERS(2.0f),
+                  CUI_COLOR_BORDER_STRONG);
+    bool hot = cui_mouse_pos(ui).x >= r.x && cui_mouse_pos(ui).x <= r.x + r.w &&
+               cui_mouse_pos(ui).y >= r.y && cui_mouse_pos(ui).y <= r.y + r.h;
+    cui_draw_circle(ui, (cui_vec2){ handle_x, r.y + r.h * 0.5f }, 6.0f,
+                    (hot || sc->dragging) ? CUI_COLOR_ACCENT : CUI_COLOR_FOREGROUND);
+    cui_draw_circle(ui, (cui_vec2){ handle_x, r.y + r.h * 0.5f }, 4.5f, CUI_COLOR_SURFACE);
+}
+
+static bool ui_slider_row(cui_ctx *ui, const char *id, const char *label, float *value,
+                          float lo, float hi, float step, const char *fmt) {
+    bool changed = false;
+    char text[32];
+    snprintf(text, sizeof text, fmt ? fmt : "%.0f", *value);
+    cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
+        cui_text(ui, label, .size = UI_FS_BODY, .color = CUI_COLOR_TEXT_SECONDARY, .nowrap = true);
+        cui_spacer(ui);
+        cui_text(ui, text, .size = UI_FS_BODY, .tabular = true, .nowrap = true);
+    }
+
+    static const char *drag_id;   /* which slider owns the drag */
+    slider_ctx sc = { value, lo, hi, step, fmt, drag_id == id };
+    cui_canvas_result cr = cui_canvas(ui, id, CUI_FILL, CUI_PX(22), slider_paint, &sc, sizeof sc);
+    if (cr.pressed && !drag_id) drag_id = id;
+    if (!cui_mouse_down(ui, CUI_MOUSE_LEFT) && drag_id == id) drag_id = NULL;
+    if (drag_id == id && cr.rect.w > 1.0f) {
+        float t = (cui_mouse_pos(ui).x - (cr.rect.x + 6.0f)) / (cr.rect.w - 12.0f);
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        float v = lo + (hi - lo) * t;
+        if (step > 0.0f) v = lo + floorf((v - lo) / step + 0.5f) * step;
+        if (v < lo) v = lo;
+        if (v > hi) v = hi;
+        if (fabsf(v - *value) > 1e-6f) { *value = v; changed = true; }
+    }
+    return changed;
+}
+
 void ui_sidebar(cui_ctx *ui, app_state *st) {
     /* Every group is title (UI_FS_LABEL) + content + hairline; groups sit
      * UI_GAP apart, their own rows UI_GAP_SM apart. */
@@ -251,7 +291,8 @@ void ui_sidebar(cui_ctx *ui, app_state *st) {
         /* --- strength --- */
         cui_column(ui, .width = CUI_FILL, .gap = UI_GAP_SM) {
             cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-                cui_text(ui, "去噪强度", .font = CUI_FONT_MEDIUM, .size = UI_FS_LABEL);
+                cui_text(ui, "去噪强度", .font = CUI_FONT_MEDIUM, .size = UI_FS_LABEL,
+                         .color = CUI_COLOR_TEXT_SECONDARY);
                 cui_spacer(ui);
                 if (st->preset == PRESET_CUSTOM)
                     cui_badge(ui, "自定义", .size = CUI_SIZE_SM, .tone = CUI_TONE_WARNING);
@@ -270,12 +311,10 @@ void ui_sidebar(cui_ctx *ui, app_state *st) {
             int d0 = st->down_pct;
             float l0_0 = st->l0;
             float down_f = (float)st->down_pct;
-            if (cui_slider(ui, "预缩比例", &down_f, 10.0f, 100.0f,
-                           .step = 5.0f, .show_value = true, .format = "%.0f%%")) {
+            if (ui_slider_row(ui, "s_down", "预缩比例", &down_f, 10.0f, 100.0f, 5.0f, "%.0f%%")) {
                 st->down_pct = (int)(down_f + 0.5f);
             }
-            cui_slider(ui, "L0 平滑", &st->l0, 0.0f, 0.005f,
-                       .step = 0.0001f, .show_value = true, .format = "%.4f");
+            ui_slider_row(ui, "s_l0", "L0 平滑", &st->l0, 0.0f, 0.005f, 0.0001f, "%.4f");
             if (st->down_pct != d0 || fabsf(st->l0 - l0_0) > 5e-5f) {
                 st->preset = preset_of(st->down_pct, st->l0);
                 settings_from_state(st);
@@ -287,19 +326,17 @@ void ui_sidebar(cui_ctx *ui, app_state *st) {
         /* --- brush --- */
         cui_column(ui, .width = CUI_FILL, .gap = UI_GAP_SM) {
             cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-                cui_text(ui, "局部保护", .font = CUI_FONT_MEDIUM, .size = UI_FS_LABEL);
+                cui_text(ui, "局部保护", .font = CUI_FONT_MEDIUM, .size = UI_FS_LABEL,
+                         .color = CUI_COLOR_TEXT_SECONDARY);
                 cui_spacer(ui);
                 cui_text(ui, "B 笔刷 · E 橡皮 · L 套索", .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_MUTED);
             }
             float s0 = st->brush_size, m0 = st->brush_mix, f0 = st->feather_px;
-            cui_slider(ui, "笔刷大小", &st->brush_size, 2.0f, 300.0f,
-                       .step = 1.0f, .show_value = true, .format = "%.0f px");
-            cui_slider(ui, "恢复强度", &st->brush_mix, 0.0f, 100.0f,
-                       .step = 5.0f, .show_value = true, .format = "%.0f%%");
+            ui_slider_row(ui, "s_brush", "笔刷大小", &st->brush_size, 2.0f, 300.0f, 1.0f, "%.0f px");
+            ui_slider_row(ui, "s_mix", "恢复强度", &st->brush_mix, 0.0f, 100.0f, 5.0f, "%.0f%%");
             if (fabsf(st->brush_size - s0) > 0.01f || fabsf(st->brush_mix - m0) > 0.01f)
                 settings_from_state(st);
-            if (cui_slider(ui, "柔边", &st->feather_px, 0.0f, 150.0f,
-                           .step = 2.0f, .show_value = true, .format = "%.0f px")) {
+            if (ui_slider_row(ui, "s_feather", "柔边", &st->feather_px, 0.0f, 150.0f, 2.0f, "%.0f px")) {
                 job *j = job_selected(st);
                 if (j) {
                     j->feather_px = (int)(st->feather_px + 0.5f);
@@ -317,7 +354,8 @@ void ui_sidebar(cui_ctx *ui, app_state *st) {
             char count[48];
             snprintf(count, sizeof count, "%d", st->count);
             cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-                cui_text(ui, "队列", .font = CUI_FONT_MEDIUM, .size = UI_FS_LABEL);
+                cui_text(ui, "队列", .font = CUI_FONT_MEDIUM, .size = UI_FS_LABEL,
+                         .color = CUI_COLOR_TEXT_SECONDARY);
                 cui_spacer(ui);
                 cui_badge(ui, count, .size = CUI_SIZE_SM);
             }
@@ -356,8 +394,12 @@ void ui_sidebar(cui_ctx *ui, app_state *st) {
 /* ------------------------------------------------------------------------ */
 
 void ui_strip(cui_ctx *ui, app_state *st) {
-    cui_row(ui, .width = CUI_FILL, .height = CUI_PX(UI_STRIP), .pad_x = UI_GAP, .gap = UI_GAP,
-            .align = CUI_ALIGN_CENTER) {
+    /* the strip is its own surface: a hairline separates the file list from the
+     * canvas instead of both sitting on the same white */
+    cui_column(ui, .width = CUI_FILL, .height = CUI_PX(UI_STRIP), .bg = CUI_COLOR_SURFACE, .gap = 0) {
+        cui_separator(ui);
+        cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .pad_x = UI_GAP, .gap = UI_GAP,
+                .align = CUI_ALIGN_CENTER) {
         cui_scroll(ui, .id = "strip", .height = CUI_PX(UI_STRIP - UI_GAP), .horizontal = true,
                    .gap = UI_GAP) {
             /* the scroll container stacks children vertically, so the thumbnails
@@ -383,6 +425,7 @@ void ui_strip(cui_ctx *ui, app_state *st) {
             st->want_browse = true;
         }
         cui_tooltip(ui, "添加图片（Ctrl+O）");
+        }
     }
 }
 
@@ -395,25 +438,46 @@ void ui_status(cui_ctx *ui, app_state *st, job *j) {
     cui_column(ui, .width = CUI_FILL, .gap = UI_GAP_SM) {
         if (j && j->status == JOB_RUNNING) {
             cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-                cui_progress(ui, j->progress, .width = CUI_FILL, .height = UI_SLIDER_H, .tone = CUI_TONE_ACCENT);
+                cui_progress(ui, j->progress, .width = CUI_FILL, .height = 4, .tone = CUI_TONE_ACCENT);
                 char pct[16];
                 snprintf(pct, sizeof pct, "%d%%", (int)(j->progress * 100.0f + 0.5f));
                 cui_text(ui, j->cancel_sent ? "正在取消..." : pct, .size = UI_FS_CAPTION, .nowrap = true,
                          .tabular = true, .color = CUI_COLOR_TEXT_SECONDARY);
             }
         }
-        if (j && j->status == JOB_ERROR) {
-            cui_text(ui, j->error[0] ? j->error : "处理失败。", .size = UI_FS_CAPTION,
-                     .color = CUI_COLOR_DANGER, .nowrap = true);
-        } else if (j && j->status == JOB_DONE) {
-            const char *shown = j->mask_active ? j->out_protected : j->out;
-            char line[PATH_CAP + 64];
-            snprintf(line, sizeof line, "%s", shown[0] ? shown : j->out);
-            cui_text(ui, line, .size = UI_FS_CAPTION, .nowrap = true, .color = CUI_COLOR_TEXT_MUTED);
-        } else if (j) {
-            cui_text(ui, j->path, .size = UI_FS_CAPTION, .nowrap = true, .color = CUI_COLOR_TEXT_MUTED);
-        } else {
-            cui_text(ui, "拖入图片开始，或在左侧添加。", .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_MUTED);
+
+        char left[192] = "";
+        if (j && j->status == JOB_DONE) {
+            char when[32], l0[16];
+            fmt_ms(j->ms, when, sizeof when);
+            fmt_l0(j->res_l0, l0, sizeof l0);
+            snprintf(left, sizeof left, "%d × %d · %s · 预缩 %d%% · L0 %s%s",
+                     j->orig.w, j->orig.h, when, j->res_down_pct, l0,
+                     j->sr_cached ? " · 复用超分" : "");
+        } else if (j && j->status == JOB_RUNNING) {
+            const char *phase = j->phase[0] ? j->phase : "处理中";
+            if (strcmp(phase, "upscale") == 0) phase = "超分辨率重建";
+            else if (strcmp(phase, "smooth") == 0) phase = "L0 平滑";
+            else if (strcmp(phase, "decode") == 0) phase = "解码";
+            else if (strcmp(phase, "encode") == 0) phase = "写入 PNG";
+            else if (strcmp(phase, "composite") == 0) phase = "合成保护区域";
+            char l0[16];
+            fmt_l0(j->l0, l0, sizeof l0);
+            snprintf(left, sizeof left, "%s · 预缩 %d%% · L0 %s", phase, j->down_pct, l0);
+        } else if (j && j->status == JOB_ERROR) {
+            snprintf(left, sizeof left, "%s", j->error[0] ? j->error : "处理失败。");
+        }
+
+        cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
+            if (left[0]) {
+                cui_text(ui, left, .size = UI_FS_CAPTION, .nowrap = true, .tabular = true,
+                         .color = j && j->status == JOB_ERROR ? CUI_COLOR_DANGER : CUI_COLOR_TEXT_SECONDARY);
+                cui_spacer(ui);
+            }
+            const char *shown = j && j->status == JOB_DONE
+                                    ? (j->mask_active ? j->out_protected : j->out)
+                                    : (j ? j->path : "");
+            cui_text(ui, shown, .size = UI_FS_CAPTION, .nowrap = true, .color = CUI_COLOR_TEXT_MUTED);
         }
     }
 }

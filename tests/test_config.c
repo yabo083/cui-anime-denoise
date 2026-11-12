@@ -208,7 +208,8 @@ static void test_roundtrip(void)
     app_settings c;
 
     cfg_defaults(&a);
-    check(a.preset == 1 && a.down_pct == 100 && a.auto_check_updates == 1,
+    /* default = the "recommended" preset: PRESETS[1] in app.c, 60% / l0 0.001 */
+    check(a.preset == 1 && a.down_pct == 60 && a.auto_check_updates == 1,
           "defaults are sane");
     check(cfg_save(&a), "save defaults");
 
@@ -271,7 +272,7 @@ static void test_tolerant_load(void)
     check(s.brush_size > 60.4f && s.brush_size < 60.6f, "valid brush_size is kept");
     check(s.theme_mode == 2, "invalid theme enum clamps to 2");
     check(s.window_w == d.window_w, "wrong-typed window_w keeps the default");
-    check(s.l0 == 0.0f, "wrong-typed l0 keeps the default");
+    check(s.l0 == d.l0, "wrong-typed l0 keeps the default");
     check(strcmp(s.output_dir, "C:\\Users\\tester\\out") == 0,
           "escaped string value is decoded");
     check(s.model_root[0] == 0, "wrong-typed model_root keeps the default");

@@ -25,12 +25,16 @@ add_library(anime_core STATIC
     src/ui_shell.c
     src/ui_stage.c
     src/backend.c
+    src/backend_json.c
     src/chrome.c
     src/config.c
+    src/log.c
     src/img.c
+    src/loader.c
     src/mask.c
     src/runtime.c
-    src/update.c)
+    src/update.c
+    src/update_io.c)
 
 target_include_directories(anime_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

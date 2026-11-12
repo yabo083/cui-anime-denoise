@@ -29,10 +29,18 @@
 - **视觉**：外壳瓦片/间距 token 化——ShellRestyle 切片；整体视觉方向由设计切片重新定义
   （产出 `docs/visual-design.md`）。
 
-## 下一步（按依赖顺序）
+## 分层结构（CDC）
 
-1. 拆分 `app.c`（2308 行）为 `app.c` / `ui_shell.c` / `ui_stage.c` + `ui_tokens.h`。
-2. 切片 A1：异步 worker 启动（`backend.c` + `app.c` 的生命周期部分）。
-3. 切片 A2：chrome 命中测试/光标/最大化（`chrome.c`）。
-4. 切片 A3：`ui_shell.c` 按 token 重排，瓦片与「添加」同源。
-5. 更新基准场景覆盖新不变量（启动期间 UI 可交互、缩放光标区），重跑报告。
+- `AGENTS.md`：L0 宪法 + 路由表（改哪块读什么）
+- `docs/design.md`：规范（线程铁律 / chrome 命中测试 / 视觉 token / 状态机 / 质量门）
+- `src/ui_tokens.h`：视觉 token 单源
+- `tests/test-suite.md`：L4 行为规格（ID / 步骤 / 预期 / 机制）
+- `.context/{DECISIONS,STATE,LESSONS}.md`：架构决策、状态、踩坑
+- `lab/测试工程`：基准与交互断言（14 场景 × 1000 次 + 7 断言）
+
+## 下一步
+
+1. 视觉重设计：`docs/visual-design.md`（设计切片产出）→ 按 token 落到 `ui_shell.c`/`ui_stage.c`。
+2. 加载线程接入 `app.c`：`loader_*` 解码线程 + UI 只建纹理（目标：拖图时帧成本 < 8 ms）。
+3. 文件拆分收尾：`backend.c`→`backend_json.c`、`config.c`→`log.c`、`update.c`→`update_io.c`。
+4. 更新基准：启动期可交互（S2）、缩放光标区（W1）纳入自动断言。

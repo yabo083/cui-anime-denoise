@@ -45,6 +45,7 @@
 #include "config.h"
 #include "img.h"
 #include "icons.h"
+#include "loader.h"
 #include "mask.h"
 #include "runtime.h"
 #include "update.h"
@@ -313,6 +314,48 @@ void job_focus(app_state *st, int index) {
 
 /* Loads an image into a fresh job slot: full-res pixels, display texture,
  * thumbnail and mask. Returns NULL when the format cannot be decoded. */
+/* Creates the job from pixels the loader thread already produced: the UI thread
+ * only uploads textures here, so it never pays for a decode. */
+static job *job_add_decoded(app_state *st, loader_result *r) {
+    if (st->count >= MAX_JOBS) {
+        img_free(&r->full);
+        img_free(&r->display);
+        img_free(&r->thumb);
+        return NULL;
+    }
+    job *j = &st->jobs[st->count];
+    memset(j, 0, sizeof *j);
+    str_copy(j->path, sizeof j->path, r->path);
+    str_copy(j->name, sizeof j->name, path_basename(r->path));
+    path_stem(j->stem, sizeof j->stem, j->name);
+
+    j->orig = r->full;
+    j->has_alpha = r->has_alpha;
+    j->status = JOB_QUEUED;
+    j->down_pct = st->down_pct;
+    j->l0 = st->l0;
+    j->feather_px = (int)(st->feather_px + 0.5f);
+    j->split = 0.5f;
+    j->hist = mask_hist_new(0);
+    mask_init(&j->m, r->full.w, r->full.h);
+    out_paths(st, j);
+
+    const img_pixels *disp = r->display.rgba ? &r->display : &r->full;
+    j->orig_tex = cui_image_create(st->ui, disp->w, disp->h, disp->rgba);
+    j->disp_w = disp->w;
+    j->disp_h = disp->h;
+    if (r->thumb.rgba) {
+        j->thumb_tex = cui_image_create(st->ui, r->thumb.w, r->thumb.h, r->thumb.rgba);
+        j->thumb_w = r->thumb.w;
+        j->thumb_h = r->thumb.h;
+    }
+
+    st->count++;
+    job_focus(st, st->count - 1);
+    log_info("queued %s (%dx%d)", j->name, r->src_w, r->src_h);
+    return j;
+}
+
 static job *job_add(cui_ctx *ui, app_state *st, const char *path) {
     if (st->count >= MAX_JOBS) { toast(st, "最多同时处理 64 张图"); return NULL; }
 
@@ -371,21 +414,27 @@ static job *job_add(cui_ctx *ui, app_state *st, const char *path) {
 /* Queues an image for decoding; the frame loop decodes at most one per frame. */
 void enqueue_path(app_state *st, const char *path) {
     if (!path || !*path) return;
-    if (st->load_n >= MAX_JOBS) { toast(st, "一次最多添加 64 张图"); return; }
-    st->load_q[st->load_n] = _strdup(path);
-    if (st->load_q[st->load_n]) st->load_n++;
+    if (!loader_push(path)) toast(st, "一次最多添加 64 张图");
 }
 
 void pump_load_queue(app_state *st) {
-    if (st->load_n == 0 || !st->ui) return;
-    char *path = st->load_q[0];
-    memmove(st->load_q, st->load_q + 1, sizeof(char *) * (size_t)(st->load_n - 1));
-    st->load_n--;
-    if (path) {
-        if (job_add(st->ui, st, path)) worker_submit_next(st);
-        free(path);
+    if (!st->ui) return;
+    loader_result r;
+    /* one finished decode per frame keeps texture uploads bounded */
+    if (loader_pop(&r)) {
+        if (r.ok) {
+            if (job_add_decoded(st, &r)) worker_submit_next(st);
+        } else {
+            char msg[420];
+            snprintf(msg, sizeof msg, "无法读取 %s：%s", path_basename(r.path), r.error);
+            toast(st, msg);
+            log_warn("decode failed: %s (%s)", r.path, r.error);
+        }
+        img_free(&r.full);
+        img_free(&r.display);
+        img_free(&r.thumb);
     }
-    if (st->load_n > 0) cui_request_redraw(st->ui);
+    if (loader_pending() > 0) cui_request_redraw(st->ui);
 }
 
 void job_clear_finished(cui_ctx *ui, app_state *st) {
@@ -1196,6 +1245,7 @@ void app_init(app_state *st) {
     st->tool = TOOL_VIEW;
     str_copy(st->device, sizeof st->device, "正在启动...");
 
+    loader_init();
     rt_init();
 
     const char *env = getenv("ANIME_DENOISE_UPDATE_URL");
@@ -1220,6 +1270,7 @@ void app_shutdown(cui_ctx *ui, app_state *st) {
         st->set.window_h = (int)(sz.y + 0.5f);
     }
     settings_flush(st, true);
+    loader_shutdown();
     rt_shutdown();
     wb_shutdown();
     upd_shutdown();
@@ -1245,7 +1296,7 @@ bool app_test_add_image(app_state *st, const char *path) {
 }
 
 void app_test_enqueue(app_state *st, const char *path) { enqueue_path(st, path); }
-int app_test_load_pending(const app_state *st) { return st->load_n; }
+int app_test_load_pending(void) { return loader_pending(); }
 
 void app_test_set_preset(app_state *st, int index) { apply_preset(st, index); }
 

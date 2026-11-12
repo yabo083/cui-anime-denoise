@@ -241,15 +241,30 @@ void stage_handle_input(app_state *st, job *j) {
 /* Stage drawing                                                            */
 /* ------------------------------------------------------------------------ */
 
-static void draw_checkerboard(cui_ctx *ui, cui_rect r, float cell) {
-    cui_color a = CUI_RGBA(0x2a282480), b = CUI_RGBA(0x23212080);
+/* The canvas floor: a quiet surface with a barely-there grid. The artwork must
+ * be the strongest contrast on screen (docs/visual-design.md §6.3). */
+/* Small pill used for the before/after labels and the zoom hint. */
+static void draw_chip(cui_ctx *ui, float x, float y, const char *text) {
+    cui_text_metrics m = cui_measure_text(ui, CUI_FONT_MEDIUM, UI_FS_CAPTION, text, -1);
+    float w = m.width + 16.0f, h = 20.0f;
+    cui_draw_rect(ui, (cui_rect){ x, y, w, h }, CUI_CORNERS(6.0f), CUI_RGBA(0x161412a6));
+    cui_draw_text(ui, CUI_FONT_MEDIUM, UI_FS_CAPTION,
+                  (cui_vec2){ x + 8.0f, y + (h - m.height) * 0.5f + m.ascent * 0.0f },
+                  CUI_RGBA(0xffffffff), text, -1);
+}
+
+static void draw_canvas_floor(cui_ctx *ui, cui_rect r) {
+    cui_draw_rect(ui, r, CUI_CORNERS(UI_R_TILE), CUI_COLOR_SURFACE_MUTED);
+    const float cell = 24.0f;
+    bool dark = cui_get_theme_mode(ui) == CUI_THEME_DARK;
+    cui_color check = dark ? CUI_RGBA(0xffffff0a) : CUI_RGBA(0x00000008);
     for (float y = r.y, row = 0; y < r.y + r.h; y += cell, row++) {
-        for (float x = r.x, col = 0; x < r.x + r.w; x += cell, col++) {
+        for (float x = r.x + ((int)row & 1 ? cell : 0.0f); x < r.x + r.w; x += cell * 2) {
             float w = cell, h = cell;
             if (x + w > r.x + r.w) w = r.x + r.w - x;
             if (y + h > r.y + r.h) h = r.y + r.h - y;
-            cui_draw_rect(ui, (cui_rect){ x, y, w, h }, CUI_CORNERS(0),
-                          ((int)row + (int)col) & 1 ? b : a);
+            if (w > 0.0f && h > 0.0f)
+                cui_draw_rect(ui, (cui_rect){ x, y, w, h }, CUI_CORNERS(0), check);
         }
     }
 }
@@ -278,7 +293,7 @@ static void stage_paint(cui_ctx *ui, cui_rect r, void *user) {
      * resize from leaving the image at the old zoom */
     stage_ensure_view(j, r);
 
-    draw_checkerboard(ui, r, 18.0f);
+    draw_canvas_floor(ui, r);
 
     float z = j->view.zoom;
     float iw = (float)(j->disp_w), ih = (float)(j->disp_h);

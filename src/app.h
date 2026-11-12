@@ -179,11 +179,6 @@ typedef struct app_state {
     char toast[192];
     double toast_until;
 
-    /* images waiting to be decoded: one per frame keeps a 20-file drop from
-     * turning into one long freeze */
-    char *load_q[MAX_JOBS];
-    int load_n;
-
     /* settings land on disk when they stop changing, not per slider tick */
     bool settings_dirty;
     double settings_dirty_at;
@@ -230,7 +225,7 @@ void app_test_fake_result(app_state *st, int index);
 /* Queue an image without the worker (returns false when it cannot be decoded). */
 bool app_test_add_image(app_state *st, const char *path);
 void app_test_enqueue(app_state *st, const char *path);
-int app_test_load_pending(const app_state *st);
+int app_test_load_pending(void);
 void app_test_set_preset(app_state *st, int index);
 job *app_test_selected(app_state *st);
 

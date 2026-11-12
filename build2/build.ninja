@@ -85,6 +85,15 @@ build CMakeFiles\anime_core.dir\src\backend.c.obj: C_COMPILER__anime_core_unscan
   TARGET_COMPILE_PDB = CMakeFiles\anime_core.dir\anime_core.pdb
   TARGET_PDB = anime_core.pdb
 
+build CMakeFiles\anime_core.dir\src\backend_json.c.obj: C_COMPILER__anime_core_unscanned_Release E$:\Codes\AI\lab\cui-anime-denoise\src\backend_json.c || cmake_object_order_depends_target_anime_core
+  DEFINES = -DAPP_VERSION=\"1.1.0\" -DUNICODE=1 -D_CRT_SECURE_NO_WARNINGS=1 -D_UNICODE=1
+  FLAGS = /DWIN32 /D_WINDOWS /W3 /MD /O2 /Ob2 /DNDEBUG -std:c11 /utf-8 /W4 /permissive- /O2
+  INCLUDES = -IE:\Codes\AI\lab\cui-anime-denoise\src -IE:\Codes\AI\lab\cui-anime-denoise\third_party\CUI\include
+  OBJECT_DIR = CMakeFiles\anime_core.dir
+  OBJECT_FILE_DIR = CMakeFiles\anime_core.dir\src
+  TARGET_COMPILE_PDB = CMakeFiles\anime_core.dir\anime_core.pdb
+  TARGET_PDB = anime_core.pdb
+
 build CMakeFiles\anime_core.dir\src\chrome.c.obj: C_COMPILER__anime_core_unscanned_Release E$:\Codes\AI\lab\cui-anime-denoise\src\chrome.c || cmake_object_order_depends_target_anime_core
   DEFINES = -DAPP_VERSION=\"1.1.0\" -DUNICODE=1 -D_CRT_SECURE_NO_WARNINGS=1 -D_UNICODE=1
   FLAGS = /DWIN32 /D_WINDOWS /W3 /MD /O2 /Ob2 /DNDEBUG -std:c11 /utf-8 /W4 /permissive- /O2
@@ -103,7 +112,25 @@ build CMakeFiles\anime_core.dir\src\config.c.obj: C_COMPILER__anime_core_unscann
   TARGET_COMPILE_PDB = CMakeFiles\anime_core.dir\anime_core.pdb
   TARGET_PDB = anime_core.pdb
 
+build CMakeFiles\anime_core.dir\src\log.c.obj: C_COMPILER__anime_core_unscanned_Release E$:\Codes\AI\lab\cui-anime-denoise\src\log.c || cmake_object_order_depends_target_anime_core
+  DEFINES = -DAPP_VERSION=\"1.1.0\" -DUNICODE=1 -D_CRT_SECURE_NO_WARNINGS=1 -D_UNICODE=1
+  FLAGS = /DWIN32 /D_WINDOWS /W3 /MD /O2 /Ob2 /DNDEBUG -std:c11 /utf-8 /W4 /permissive- /O2
+  INCLUDES = -IE:\Codes\AI\lab\cui-anime-denoise\src -IE:\Codes\AI\lab\cui-anime-denoise\third_party\CUI\include
+  OBJECT_DIR = CMakeFiles\anime_core.dir
+  OBJECT_FILE_DIR = CMakeFiles\anime_core.dir\src
+  TARGET_COMPILE_PDB = CMakeFiles\anime_core.dir\anime_core.pdb
+  TARGET_PDB = anime_core.pdb
+
 build CMakeFiles\anime_core.dir\src\img.c.obj: C_COMPILER__anime_core_unscanned_Release E$:\Codes\AI\lab\cui-anime-denoise\src\img.c || cmake_object_order_depends_target_anime_core
+  DEFINES = -DAPP_VERSION=\"1.1.0\" -DUNICODE=1 -D_CRT_SECURE_NO_WARNINGS=1 -D_UNICODE=1
+  FLAGS = /DWIN32 /D_WINDOWS /W3 /MD /O2 /Ob2 /DNDEBUG -std:c11 /utf-8 /W4 /permissive- /O2
+  INCLUDES = -IE:\Codes\AI\lab\cui-anime-denoise\src -IE:\Codes\AI\lab\cui-anime-denoise\third_party\CUI\include
+  OBJECT_DIR = CMakeFiles\anime_core.dir
+  OBJECT_FILE_DIR = CMakeFiles\anime_core.dir\src
+  TARGET_COMPILE_PDB = CMakeFiles\anime_core.dir\anime_core.pdb
+  TARGET_PDB = anime_core.pdb
+
+build CMakeFiles\anime_core.dir\src\loader.c.obj: C_COMPILER__anime_core_unscanned_Release E$:\Codes\AI\lab\cui-anime-denoise\src\loader.c || cmake_object_order_depends_target_anime_core
   DEFINES = -DAPP_VERSION=\"1.1.0\" -DUNICODE=1 -D_CRT_SECURE_NO_WARNINGS=1 -D_UNICODE=1
   FLAGS = /DWIN32 /D_WINDOWS /W3 /MD /O2 /Ob2 /DNDEBUG -std:c11 /utf-8 /W4 /permissive- /O2
   INCLUDES = -IE:\Codes\AI\lab\cui-anime-denoise\src -IE:\Codes\AI\lab\cui-anime-denoise\third_party\CUI\include
@@ -139,6 +166,15 @@ build CMakeFiles\anime_core.dir\src\update.c.obj: C_COMPILER__anime_core_unscann
   TARGET_COMPILE_PDB = CMakeFiles\anime_core.dir\anime_core.pdb
   TARGET_PDB = anime_core.pdb
 
+build CMakeFiles\anime_core.dir\src\update_io.c.obj: C_COMPILER__anime_core_unscanned_Release E$:\Codes\AI\lab\cui-anime-denoise\src\update_io.c || cmake_object_order_depends_target_anime_core
+  DEFINES = -DAPP_VERSION=\"1.1.0\" -DUNICODE=1 -D_CRT_SECURE_NO_WARNINGS=1 -D_UNICODE=1
+  FLAGS = /DWIN32 /D_WINDOWS /W3 /MD /O2 /Ob2 /DNDEBUG -std:c11 /utf-8 /W4 /permissive- /O2
+  INCLUDES = -IE:\Codes\AI\lab\cui-anime-denoise\src -IE:\Codes\AI\lab\cui-anime-denoise\third_party\CUI\include
+  OBJECT_DIR = CMakeFiles\anime_core.dir
+  OBJECT_FILE_DIR = CMakeFiles\anime_core.dir\src
+  TARGET_COMPILE_PDB = CMakeFiles\anime_core.dir\anime_core.pdb
+  TARGET_PDB = anime_core.pdb
+
 
 # =============================================================================
 # Link build statements for STATIC_LIBRARY target anime_core
@@ -147,7 +183,7 @@ build CMakeFiles\anime_core.dir\src\update.c.obj: C_COMPILER__anime_core_unscann
 #############################################
 # Link the static library anime_core.lib
 
-build anime_core.lib: C_STATIC_LIBRARY_LINKER__anime_core_Release CMakeFiles\anime_core.dir\src\app.c.obj CMakeFiles\anime_core.dir\src\ui_shell.c.obj CMakeFiles\anime_core.dir\src\ui_stage.c.obj CMakeFiles\anime_core.dir\src\backend.c.obj CMakeFiles\anime_core.dir\src\chrome.c.obj CMakeFiles\anime_core.dir\src\config.c.obj CMakeFiles\anime_core.dir\src\img.c.obj CMakeFiles\anime_core.dir\src\mask.c.obj CMakeFiles\anime_core.dir\src\runtime.c.obj CMakeFiles\anime_core.dir\src\update.c.obj || third_party\CUI\cui.lib
+build anime_core.lib: C_STATIC_LIBRARY_LINKER__anime_core_Release CMakeFiles\anime_core.dir\src\app.c.obj CMakeFiles\anime_core.dir\src\ui_shell.c.obj CMakeFiles\anime_core.dir\src\ui_stage.c.obj CMakeFiles\anime_core.dir\src\backend.c.obj CMakeFiles\anime_core.dir\src\backend_json.c.obj CMakeFiles\anime_core.dir\src\chrome.c.obj CMakeFiles\anime_core.dir\src\config.c.obj CMakeFiles\anime_core.dir\src\log.c.obj CMakeFiles\anime_core.dir\src\img.c.obj CMakeFiles\anime_core.dir\src\loader.c.obj CMakeFiles\anime_core.dir\src\mask.c.obj CMakeFiles\anime_core.dir\src\runtime.c.obj CMakeFiles\anime_core.dir\src\update.c.obj CMakeFiles\anime_core.dir\src\update_io.c.obj || third_party\CUI\cui.lib
   LANGUAGE_COMPILE_FLAGS = /DWIN32 /D_WINDOWS /W3 /MD /O2 /Ob2 /DNDEBUG
   LINK_FLAGS = /machine:x64
   OBJECT_DIR = CMakeFiles\anime_core.dir

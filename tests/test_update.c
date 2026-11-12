@@ -16,8 +16,8 @@
  *
  * Build (from the repo root, with MSVC active):
  *   cl /nologo /utf-8 /W4 /std:c11 /I src tests\test_update.c src\update.c
- *      src\config.c /Fe:tmp\test_update.exe
- *      /link winhttp.lib bcrypt.lib shell32.lib ole32.lib advapi32.lib
+ *      src\update_io.c src\config.c src\log.c /Fe:tmp\test_update.exe
+ *      /link winhttp.lib bcrypt.lib shell32.lib ole32.lib advapi32.lib user32.lib
  *
  * See tests/README.md for the full local-server recipe.
  */
