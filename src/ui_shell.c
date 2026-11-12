@@ -101,7 +101,7 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
         st->r_title_name = (cui_rect){ 0, 0, 0, 0 };
     }
 
-    /* right: [device pill] [update] [help] [settings]   [─][□][×] */
+    /* right: [device pill] [update] [help] [settings]   [min][max][×] */
     float cx0 = r.x + r.w - UI_CAPTION_BUTTONS;
     st->r_close = (cui_rect){ cx0 + UI_CAPTION_W * 2.0f, r.y, UI_CAPTION_W, UI_TITLEBAR };
     st->r_max   = (cui_rect){ cx0 + UI_CAPTION_W,        r.y, UI_CAPTION_W, UI_TITLEBAR };
@@ -483,7 +483,7 @@ static void ui_help_dialog(cui_ctx *ui, app_state *st) {
             shortcut_row(ui, "Backspace", "删除套索锚点");
             shortcut_row(ui, "F / 0 / Ctrl +-", "适合窗口 / 1:1 / 缩放");
             shortcut_row_text(ui, "左右方向键", "上一张 / 下一张");
-            shortcut_row(ui, "Esc", "放弃套索 → 退出保护 → 关浮层");
+            shortcut_row(ui, "Esc", "放弃套索 · 退出保护 · 关浮层");
             cui_separator(ui);
             cui_text(ui, "局部保护：画笔涂过的地方保留原图，柔边自动过渡；"
                          "磁性套索沿线稿吸附。改预设或微调会立即重新去噪。",

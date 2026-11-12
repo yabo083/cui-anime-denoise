@@ -336,7 +336,7 @@ static void bg_box_pass(unsigned char *px, unsigned char *tmp, int w, int h, int
 }
 
 /* The acrylic floor texture: the result point-sampled to ~160px and softened
- * by six box passes (≈gaussian). Built once per result; the few thousand
+ * by six box passes (~gaussian). Built once per result; the few thousand
  * reads stay well inside a frame budget. */
 static void bg_build(cui_ctx *ui, job *j) {
     if (j->bg_tex) { cui_image_destroy(ui, j->bg_tex); j->bg_tex = 0; }
@@ -365,7 +365,7 @@ static void bg_build(cui_ctx *ui, job *j) {
 /* The canvas floor. Acrylic mode (the default) stretches a heavily blurred
  * copy of the most recent output under a theme-tinted veil — the WinUI mica
  * idea — and falls back to the solid token colour with a barely-there
- * checker so transparency is readable (spec: 对比 ≤4%). */
+ * checker so transparency is readable (spec: 对比 <=4%). */
 static void draw_canvas_floor(cui_ctx *ui, app_state *st, job *j, cui_rect r) {
     bool dark = cui_get_theme_mode(ui) == CUI_THEME_DARK;
     if (st->set.canvas_bg) {
