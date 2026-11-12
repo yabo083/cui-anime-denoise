@@ -394,9 +394,43 @@ static void ui_settings_sheet(cui_ctx *ui, app_state *st) {
 /* Dialogs                                                                   */
 /* ------------------------------------------------------------------------ */
 
+/* Alternatives separated by " / " become separate keycaps joined by a plain
+ * 或 label: a bare "/" inside the string would render as its own cap and read
+ * like a shortcut of its own. */
 static void shortcut_row(cui_ctx *ui, const char *keys, const char *what) {
     cui_row(ui, .width = CUI_FILL, .gap = 10, .align = CUI_ALIGN_CENTER) {
-        cui_box(ui, .width = CUI_PX(176), .align = CUI_ALIGN_END) { cui_kbd(ui, keys); }
+        cui_box(ui, .width = CUI_PX(176), .align = CUI_ALIGN_END) {
+            cui_row(ui, .gap = 5, .align = CUI_ALIGN_CENTER) {
+                const char *p = keys;
+                for (;;) {
+                    const char *sep = strstr(p, " / ");
+                    char chunk[64];
+                    if (sep) {
+                        int n = (int)(sep - p);
+                        if (n > (int)sizeof chunk - 1) n = (int)sizeof chunk - 1;
+                        memcpy(chunk, p, (size_t)n);
+                        chunk[n] = 0;
+                    } else {
+                        str_copy(chunk, sizeof chunk, p);
+                    }
+                    cui_kbd(ui, chunk);
+                    if (!sep) break;
+                    cui_text(ui, "或", .size = 10, .color = CUI_COLOR_TEXT_SECONDARY);
+                    p = sep + 3;
+                }
+            }
+        }
+        cui_text(ui, what, .size = 12);
+    }
+}
+
+/* Same row, but the left column is plain text: gestures (右键拖动) are not
+ * keys, and a keycap around a sentence would look like one weird key. */
+static void shortcut_row_text(cui_ctx *ui, const char *label, const char *what) {
+    cui_row(ui, .width = CUI_FILL, .gap = 10, .align = CUI_ALIGN_CENTER) {
+        cui_box(ui, .width = CUI_PX(176), .align = CUI_ALIGN_END) {
+            cui_text(ui, label, .size = 11.5f, .color = CUI_COLOR_TEXT_SECONDARY);
+        }
         cui_text(ui, what, .size = 12);
     }
 }
@@ -409,17 +443,17 @@ static void ui_help_dialog(cui_ctx *ui, app_state *st) {
             shortcut_row(ui, "Ctrl O / Ctrl V", "添加图片 / 粘贴剪贴板");
             shortcut_row(ui, "Ctrl S", "另存为");
             shortcut_row(ui, "Ctrl Z / Ctrl Shift Z", "撤销 / 重做笔刷");
-            shortcut_row(ui, "1 / 2 / 3 或 X", "对比 / 原图 / 结果，X 互切");
-            shortcut_row(ui, "按住 Z / 按住 M", "查看原图 / 查看保护区");
+            shortcut_row(ui, "1 / 2 / 3 / X", "对比 / 原图 / 结果，X 互切");
+            shortcut_row(ui, "Z / M", "按住查看原图 / 按住查看保护区");
             shortcut_row(ui, "B / E / L", "画笔 / 橡皮 / 磁性套索（再按退出）");
             shortcut_row(ui, "I", "反选保护区");
-            shortcut_row(ui, "[ ] 或空格+滚轮", "调整笔刷大小");
-            shortcut_row(ui, "右键拖动", "临时当橡皮擦");
-            shortcut_row(ui, "空格或中键拖动", "平移画布");
-            shortcut_row(ui, "Enter / 双击 / 回起点", "闭合套索（Alt/右键=减选）");
+            shortcut_row(ui, "[ / ]", "调整笔刷大小（空格+滚轮也可）");
+            shortcut_row_text(ui, "右键拖动", "临时当橡皮擦");
+            shortcut_row_text(ui, "空格或中键拖动", "平移画布");
+            shortcut_row(ui, "Enter", "闭合套索（双击/回起点亦可；Alt/右键=减选）");
             shortcut_row(ui, "Backspace", "删除套索锚点");
             shortcut_row(ui, "F / 0 / Ctrl +-", "适合窗口 / 1:1 / 缩放");
-            shortcut_row(ui, "左右方向键", "上一张 / 下一张");
+            shortcut_row_text(ui, "左右方向键", "上一张 / 下一张");
             shortcut_row(ui, "Esc", "放弃套索 → 退出保护 → 关浮层");
             cui_separator(ui);
             cui_text(ui, "局部保护：画笔涂过的地方保留原图，柔边自动过渡；"
