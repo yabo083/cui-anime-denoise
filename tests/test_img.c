@@ -1,7 +1,8 @@
-/* Driver for src/img.c (WIC image IO). Build and run from the repo root:
+/* Driver for src/img.c + src/img_clip.c (WIC image IO). Build and run from
+ * the repo root:
  *
  *   pwsh -NoProfile -Command ". .\toolchain.ps1; cl /nologo /utf-8 /W4
- *       /Fe:tmp\test_img.exe tests\test_img.c src\img.c
+ *       /Fe:tmp\test_img.exe tests\test_img.c src\img.c src\img_clip.c
  *       /link ole32.lib oleaut32.lib windowscodecs.lib shlwapi.lib user32.lib"
  *   tmp\test_img.exe
  *

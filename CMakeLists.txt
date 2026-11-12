@@ -30,6 +30,7 @@ add_library(anime_core STATIC
     src/config.c
     src/log.c
     src/img.c
+    src/img_clip.c
     src/loader.c
     src/mask.c
     src/runtime.c

@@ -39,14 +39,37 @@ void img_shutdown(void);
  * zeroed when the file cannot be read. */
 bool img_decode_file(const char *utf8_path, img_pixels *out);
 
+/* Same, plus the source's embedded ICC profile (matching the reference
+ * denoise.py open_image): `*icc`/`icc_size` get a malloc'ed copy of the
+ * profile bytes when -- and only when -- the source is an RGB-family format
+ * (RGB/RGBA/RGBX/palette); grey, CMYK and profile-less sources give NULL/0.
+ * Free with img_free_icc (NULL-safe). 16-bit-per-channel sources are scaled
+ * v/257+0.5 like PIL instead of WIC's high-byte clip; CMYK frames go through
+ * IWICColorTransform with the embedded profile when one exists. */
+bool img_decode_file_ex(const char *utf8_path, img_pixels *out,
+                        unsigned char **icc, size_t *icc_size);
+
 /* Same, from a memory buffer (worker previews, clipboard PNG). */
 bool img_decode_memory(const void *data, size_t size, img_pixels *out);
 
+/* Memory variant of img_decode_file_ex (CLI stdin path). */
+bool img_decode_memory_ex(const void *data, size_t size, img_pixels *out,
+                          unsigned char **icc, size_t *icc_size);
+
 void img_free(img_pixels *p);
+void img_free_icc(unsigned char *icc);
 
 /* Encode. `quality` is 0..100 and only affects JPEG. */
 bool img_encode_png(const char *utf8_path, const img_pixels *p);
 bool img_encode_jpeg(const char *utf8_path, const img_pixels *p, int quality);
+
+/* PNG encode that embeds `icc` (SetColorContexts -> iCCP chunk), so the
+ * colour profile survives the round trip like the reference's save_png.
+ * NULL icc / 0 size behaves exactly like img_encode_png. */
+bool img_encode_png_icc(const char *utf8_path, const img_pixels *p,
+                        const unsigned char *icc, size_t icc_size);
+bool img_encode_png_memory_icc(const img_pixels *p, const unsigned char *icc,
+                               size_t icc_size, void **out, size_t *size);
 
 /* Encode into a malloc'ed buffer instead of a file (caller free()s). Used for
  * the clipboard's CF_PNG and for shipping masks to the worker without disk. */

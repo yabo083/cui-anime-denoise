@@ -1,10 +1,12 @@
 /* Image IO on top of the Windows Imaging Component (WIC).
  *
  * Everything the header promises lives here: file and memory decode (first
- * frame only, EXIF orientation applied), PNG/JPEG encode to a file or to a
- * buffer, high quality resize, thumbnails, alpha probing and the clipboard
- * (CF_DIBV5 / CF_DIB / CF_PNG). WIC gives us WebP, AVIF, HEIF and TIFF for
- * free through the OS codecs, so no third-party decoder is involved.
+ * frame only, EXIF orientation applied, embedded ICC profile on request,
+ * 16-bit-per-channel and CMYK sources handled with PIL semantics), PNG/JPEG
+ * encode to a file or to a buffer (ICC via frame colour contexts), high
+ * quality resize, thumbnails, alpha probing. The clipboard half lives in
+ * img_clip.c. WIC gives us WebP, AVIF, HEIF and TIFF for free through the
+ * OS codecs, so no third-party decoder is involved.
  *
  * House rules, all of them enforced below:
  *   - pixels are straight (non-premultiplied) RGBA8, top-down, tight stride;
@@ -14,6 +16,7 @@
  *     what the header promises.
  */
 #include "img.h"
+#include "img_priv.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -27,14 +30,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Refuse to allocate anything bigger than this while decoding; 2 GiB is well
- * past any anime frame we would ever denoise (a 4096x4096 mask is 64 MiB). */
-#define IMG_MAX_BYTES ((uint64_t)2048u * 1024u * 1024u)
-
-/* BITMAPINFOHEADER compression value that asks for a fourth (alpha) mask.
- * wingdi.h only defines it when WINVER >= 0x0601, so keep our own name. */
-#define IMG_BI_ALPHABITFIELDS 6
-
 /* 8-bit-per-channel straight alpha, the format WIC decodes and scales in. */
 #define IMG_PIXEL_FORMAT (&GUID_WICPixelFormat32bppRGBA)
 
@@ -45,7 +40,7 @@ static bool g_com_owned;   /* true only when we called CoInitializeEx */
 /* Small helpers                                                              */
 /* ------------------------------------------------------------------------- */
 
-static wchar_t *utf8_to_wide(const char *s)
+wchar_t *img__utf8_to_wide(const char *s)
 {
     if (!s || !*s) return NULL;
     int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, NULL, 0);
@@ -61,7 +56,7 @@ static wchar_t *utf8_to_wide(const char *s)
 
 /* Allocates a zeroed img_pixels (caller frees with img_free). Clears *out on
  * failure. */
-static bool pixels_alloc(int w, int h, img_pixels *out)
+bool img__pixels_alloc(int w, int h, img_pixels *out)
 {
     out->rgba = NULL;
     out->w = 0;
@@ -251,19 +246,308 @@ static void read_orientation(IWICBitmapFrameDecode *frame, UINT *out)
     reader->lpVtbl->Release(reader);
 }
 
-/* Shared tail of both decoders: first frame -> orientation -> straight RGBA. */
-static bool decode_frame(IWICBitmapDecoder *decoder, img_pixels *out)
+/* How the frame's own pixel format reaches straight RGBA8. WICPixelFormatGUID
+ * is checked by value (WIC substitutes e.g. BGRA for RGBA on some codecs). */
+typedef enum img_src_kind {
+    IMG_KIND_CONVERT = 0,   /* 8bpc family: IWICFormatConverter is fine */
+    IMG_KIND_16,            /* 16-bit/channel: scale v/257 like PIL, never >>8 */
+    IMG_KIND_CMYK           /* colour transform when profiled, else K-min */
+} img_src_kind;
+
+typedef struct src_format {
+    const GUID *guid;
+    uint8_t kind;
+    uint8_t channels;   /* channel samples per pixel (gray 1, RGB 3, RGBA/CMYK 4, CMYKA 5) */
+    uint8_t chan_bytes; /* bytes per channel sample (1 or 2) */
+    uint8_t bgr;        /* channel order is BGR(A) instead of RGB(A) */
+    uint8_t premul;     /* alpha is premultiplied */
+} src_format;
+
+/* The formats we take direct control of. Everything else lands in
+ * IMG_KIND_CONVERT, including the 32bppGreyFloat and FixedPoint oddballs. */
+static const src_format g_src_formats[] = {
+    { &GUID_WICPixelFormat16bppGray,        IMG_KIND_16,   1, 2, 0, 0 },
+    { &GUID_WICPixelFormat48bppRGB,         IMG_KIND_16,   3, 2, 0, 0 },
+    { &GUID_WICPixelFormat48bppBGR,         IMG_KIND_16,   3, 2, 1, 0 },
+    { &GUID_WICPixelFormat64bppRGBA,        IMG_KIND_16,   4, 2, 0, 0 },
+    { &GUID_WICPixelFormat64bppBGRA,        IMG_KIND_16,   4, 2, 1, 0 },
+    { &GUID_WICPixelFormat64bppPRGBA,       IMG_KIND_16,   4, 2, 0, 1 },
+    { &GUID_WICPixelFormat64bppPBGRA,       IMG_KIND_16,   4, 2, 1, 1 },
+    { &GUID_WICPixelFormat32bppCMYK,        IMG_KIND_CMYK, 4, 1, 0, 0 },
+    { &GUID_WICPixelFormat40bppCMYKAlpha,   IMG_KIND_CMYK, 5, 1, 0, 0 },
+    { &GUID_WICPixelFormat64bppCMYK,        IMG_KIND_CMYK, 4, 2, 0, 0 },
+    { &GUID_WICPixelFormat80bppCMYKAlpha,   IMG_KIND_CMYK, 5, 2, 0, 0 },
+};
+
+static const src_format *find_src_format(const WICPixelFormatGUID *fmt)
+{
+    for (size_t i = 0; i < sizeof g_src_formats / sizeof g_src_formats[0]; i++)
+        if (IsEqualGUID(fmt, g_src_formats[i].guid)) return &g_src_formats[i];
+    return NULL;
+}
+
+/* RGB-family formats (plus indexed -> PIL 'P') are the only ones whose
+ * embedded ICC the reference pipeline keeps; grey and CMYK drop it. */
+static bool format_is_rgb_family(const WICPixelFormatGUID *fmt)
+{
+    static const GUID *const family[] = {
+        &GUID_WICPixelFormat1bppIndexed,  &GUID_WICPixelFormat2bppIndexed,
+        &GUID_WICPixelFormat4bppIndexed,  &GUID_WICPixelFormat8bppIndexed,
+        &GUID_WICPixelFormat16bppBGR555,  &GUID_WICPixelFormat16bppBGR565,
+        &GUID_WICPixelFormat16bppBGRA5551,
+        &GUID_WICPixelFormat24bppRGB,     &GUID_WICPixelFormat24bppBGR,
+        &GUID_WICPixelFormat32bppRGB,     &GUID_WICPixelFormat32bppRGBA,
+        &GUID_WICPixelFormat32bppPRGBA,   &GUID_WICPixelFormat32bppBGR,
+        &GUID_WICPixelFormat32bppBGRA,    &GUID_WICPixelFormat32bppPBGRA,
+        &GUID_WICPixelFormat32bppBGR101010, &GUID_WICPixelFormat32bppRGBA1010102XR,
+        &GUID_WICPixelFormat48bppRGB,     &GUID_WICPixelFormat48bppBGR,
+        &GUID_WICPixelFormat48bppRGBFixedPoint,
+        &GUID_WICPixelFormat64bppRGBA,    &GUID_WICPixelFormat64bppBGRA,
+        &GUID_WICPixelFormat64bppPRGBA,   &GUID_WICPixelFormat64bppPBGRA,
+        &GUID_WICPixelFormat64bppRGBFixedPoint, &GUID_WICPixelFormat64bppRGBAFixedPoint,
+        &GUID_WICPixelFormat96bppRGBFloat,
+        &GUID_WICPixelFormat128bppRGBFloat, &GUID_WICPixelFormat128bppRGBAFloat,
+        &GUID_WICPixelFormat128bppPRGBAFloat,
+    };
+    for (size_t i = 0; i < sizeof family / sizeof family[0]; i++)
+        if (IsEqualGUID(fmt, family[i])) return true;
+    return false;
+}
+
+/* Pulls the frame's colour contexts. Returns the count found (the array holds
+ * released-on-exit IWICColorContext pointers) and hands the first
+ * WICColorContextProfile one back through *profile_ctx for ICC bytes /
+ * CMYK transforms. */
+static UINT frame_color_contexts(IWICBitmapFrameDecode *frame, IWICColorContext **ctxs,
+                                 UINT capacity, IWICColorContext **profile_ctx)
+{
+    UINT want = 0, got = 0;
+
+    *profile_ctx = NULL;
+    if (FAILED(frame->lpVtbl->GetColorContexts(frame, 0, NULL, &want)) || !want)
+        return 0;
+    if (want > capacity) want = capacity;
+    for (UINT i = 0; i < want; i++) {
+        if (FAILED(g_factory->lpVtbl->CreateColorContext(g_factory, &ctxs[i])) || !ctxs[i])
+            return got;
+        got++;
+    }
+    if (FAILED(frame->lpVtbl->GetColorContexts(frame, got, ctxs, &got))) return got;
+    for (UINT i = 0; i < got; i++) {
+        WICColorContextType type;
+        if (SUCCEEDED(ctxs[i]->lpVtbl->GetType(ctxs[i], &type)) &&
+            type == WICColorContextProfile && !*profile_ctx)
+            *profile_ctx = ctxs[i];
+    }
+    return got;
+}
+
+/* Copies the ICC profile bytes out of a WICColorContextProfile context. */
+static unsigned char *context_profile_bytes(IWICColorContext *ctx, size_t *size)
+{
+    UINT bytes = 0;
+    unsigned char *copy;
+
+    *size = 0;
+    if (FAILED(ctx->lpVtbl->GetProfileBytes(ctx, 0, NULL, &bytes)) || !bytes) return NULL;
+    copy = (unsigned char *)malloc(bytes);
+    if (!copy) return NULL;
+    if (FAILED(ctx->lpVtbl->GetProfileBytes(ctx, bytes, copy, &bytes))) {
+        free(copy);
+        return NULL;
+    }
+    *size = bytes;
+    return copy;
+}
+
+/* PIL's uint16 -> uint8: v / 257.0 + 0.5, clipped. The reference gates the
+ * divide on the image actually reaching past 255 (I;16 containers can still
+ * hold 8-bit-range values); `gated` switches it to a plain floor. */
+static uint8_t scale_16_to_8(uint32_t v, bool gated)
+{
+    double d = gated ? (double)v + 0.5 : (double)v / 257.0 + 0.5;
+    return (uint8_t)(d > 255.0 ? 255.0 : d);
+}
+
+/* 16-bit-per-channel sources, scaled the way the reference's open_image does
+ * (Pillow divides by 257 and rounds; WIC's own converter just takes the high
+ * byte, which is a floor - off by one on ~half the samples). Alpha is the
+ * high byte like PIL's RGBA;16B unpacker. */
+static bool decode_16bit(IWICBitmapSource *source, const src_format *spec, img_pixels *out)
+{
+    UINT w = 0, h = 0;
+    uint8_t *buf = NULL;
+    img_pixels px = { NULL, 0, 0 };
+    bool ok = false;
+    UINT stride;
+
+    if (FAILED(source->lpVtbl->GetSize(source, &w, &h)) || w == 0 || h == 0) return false;
+    if (!img__pixels_alloc((int)w, (int)h, &px)) return false;
+    stride = w * (spec->chan_bytes * spec->channels);
+    buf = (uint8_t *)malloc((size_t)stride * h);
+    if (!buf) goto cleanup;
+    if (FAILED(source->lpVtbl->CopyPixels(source, NULL, stride, stride * h, buf))) goto cleanup;
+
+    /* PIL's I;16 rule: only divide by 257 when the data actually exceeds 255. */
+    bool gated = false;
+    if (spec->channels == 1) {
+        uint16_t peak = 0;
+        for (size_t i = 0, n = (size_t)w * h; i < n; i++)
+            if (((const uint16_t *)buf)[i] > peak) peak = ((const uint16_t *)buf)[i];
+        gated = peak <= 255;
+    }
+
+    for (UINT y = 0; y < h; y++) {
+        const uint16_t *row = (const uint16_t *)(buf + (size_t)y * stride);
+        uint8_t *dst = px.rgba + (size_t)y * w * 4u;
+        for (UINT x = 0; x < w; x++, dst += 4) {
+            if (spec->channels == 1) {
+                dst[0] = dst[1] = dst[2] = scale_16_to_8(row[x], gated);
+                dst[3] = 255;
+            } else {
+                const uint16_t *s = row + (size_t)x * spec->channels;
+                uint32_t r16 = s[spec->bgr ? 2u : 0u];
+                uint32_t g16 = s[1];
+                uint32_t b16 = s[spec->bgr ? 0u : 2u];
+                uint32_t a16 = spec->channels >= 4 ? s[3] : 65535u;
+                if (spec->premul && a16 && a16 < 65535u) {
+                    r16 = r16 * 65535u / a16;
+                    g16 = g16 * 65535u / a16;
+                    b16 = b16 * 65535u / a16;
+                }
+                dst[0] = scale_16_to_8(r16, false);
+                dst[1] = scale_16_to_8(g16, false);
+                dst[2] = scale_16_to_8(b16, false);
+                dst[3] = (uint8_t)(a16 >> 8);
+            }
+        }
+    }
+    *out = px;
+    ok = true;
+
+cleanup:
+    free(buf);
+    if (!ok) img_free(&px);
+    return ok;
+}
+
+/* PIL's CMYK->RGB for untagged CMYK: R = 255 - min(255, C + K). The task only
+ * guarantees parity for profiled CMYK; this fallback keeps random CMYK JPEGs
+ * from failing outright. */
+static bool decode_cmyk_naive(IWICBitmapSource *source, const src_format *spec, img_pixels *out)
+{
+    UINT w = 0, h = 0;
+    uint8_t *buf = NULL;
+    img_pixels px = { NULL, 0, 0 };
+    bool ok = false;
+    UINT bytes_pp = spec->chan_bytes * spec->channels;
+    UINT stride;
+
+    if (FAILED(source->lpVtbl->GetSize(source, &w, &h)) || w == 0 || h == 0) return false;
+    if (!img__pixels_alloc((int)w, (int)h, &px)) return false;
+    stride = w * bytes_pp;
+    buf = (uint8_t *)malloc((size_t)stride * h);
+    if (!buf) goto cleanup;
+    if (FAILED(source->lpVtbl->CopyPixels(source, NULL, stride, stride * h, buf))) goto cleanup;
+
+    for (UINT y = 0; y < h; y++) {
+        const uint8_t *row = buf + (size_t)y * stride;
+        uint8_t *dst = px.rgba + (size_t)y * w * 4u;
+        for (UINT x = 0; x < w; x++, dst += 4, row += bytes_pp) {
+            /* 16-bit CMYK: PIL keeps the high byte only (little-endian WORD). */
+            unsigned c = spec->chan_bytes == 2 ? row[1] : row[0];
+            unsigned m = spec->chan_bytes == 2 ? row[3] : row[1];
+            unsigned yv = spec->chan_bytes == 2 ? row[5] : row[2];
+            unsigned k = spec->chan_bytes == 2 ? row[7] : row[3];
+            dst[0] = (uint8_t)(255 - (c + k > 255 ? 255 : c + k));
+            dst[1] = (uint8_t)(255 - (m + k > 255 ? 255 : m + k));
+            dst[2] = (uint8_t)(255 - (yv + k > 255 ? 255 : yv + k));
+            dst[3] = spec->channels == 5 ? (spec->chan_bytes == 2 ? row[9] : row[4]) : 255;
+        }
+    }
+    *out = px;
+    ok = true;
+
+cleanup:
+    free(buf);
+    if (!ok) img_free(&px);
+    return ok;
+}
+
+/* Profiled CMYK -> sRGB through IWICColorTransform (the WIC analogue of the
+ * reference's ImageCms.profileToProfile). Output arrives BGRA and is swapped
+ * to RGBA afterwards. Returns false to let the caller fall back to naive. */
+static bool decode_cmyk_transform(IWICBitmapSource *source, IWICColorContext *src_ctx,
+                                  img_pixels *out)
+{
+    IWICColorContext *dst_ctx = NULL;
+    IWICColorTransform *xform = NULL;
+    uint8_t *buf = NULL;
+    img_pixels px = { NULL, 0, 0 };
+    UINT w = 0, h = 0;
+    HRESULT hr;
+    bool ok = false;
+
+    if (FAILED(g_factory->lpVtbl->CreateColorContext(g_factory, &dst_ctx)) || !dst_ctx)
+        goto cleanup;
+    /* EXIF colour space 1 is sRGB. Prefer the OS's sRGB .icm when it exists:
+     * a real profile file lets WCS match littleCMS's transform more closely
+     * than the built-in canned sRGB context. */
+    hr = dst_ctx->lpVtbl->InitializeFromFilename(
+        dst_ctx, L"C:\\Windows\\System32\\spool\\drivers\\color\\sRGB Color Space Profile.icm");
+    if (FAILED(hr))
+        hr = dst_ctx->lpVtbl->InitializeFromExifColorSpace(dst_ctx, 1);
+    if (FAILED(hr)) goto cleanup;
+    if (FAILED(g_factory->lpVtbl->CreateColorTransformer(g_factory, &xform)) || !xform)
+        goto cleanup;
+    if (FAILED(xform->lpVtbl->Initialize(xform, source, src_ctx, dst_ctx,
+                                         &GUID_WICPixelFormat32bppBGRA)))
+        goto cleanup;
+    if (FAILED(xform->lpVtbl->GetSize(xform, &w, &h)) || w == 0 || h == 0) goto cleanup;
+    if (!img__pixels_alloc((int)w, (int)h, &px)) goto cleanup;
+
+    UINT stride = w * 4u;
+    buf = (uint8_t *)malloc((size_t)stride * h);
+    if (!buf) goto cleanup;
+    if (FAILED(xform->lpVtbl->CopyPixels(xform, NULL, stride, stride * h, buf))) goto cleanup;
+    for (size_t i = 0, n = (size_t)w * h; i < n; i++) {
+        px.rgba[i * 4 + 0] = buf[i * 4 + 2];
+        px.rgba[i * 4 + 1] = buf[i * 4 + 1];
+        px.rgba[i * 4 + 2] = buf[i * 4 + 0];
+        px.rgba[i * 4 + 3] = buf[i * 4 + 3];
+    }
+    *out = px;
+    ok = true;
+
+cleanup:
+    free(buf);
+    if (!ok) img_free(&px);
+    if (xform) xform->lpVtbl->Release(xform);
+    if (dst_ctx) dst_ctx->lpVtbl->Release(dst_ctx);
+    return ok;
+}
+
+/* Shared tail of both decoders: first frame -> orientation -> RGBA (+ ICC). */
+static bool decode_frame(IWICBitmapDecoder *decoder, img_pixels *out,
+                         unsigned char **icc, size_t *icc_size)
 {
     IWICBitmapFrameDecode *frame = NULL;
     IWICBitmapFlipRotator *rotator = NULL;
     IWICFormatConverter *converter = NULL;
     IWICBitmapSource *source;
+    IWICColorContext *ctxs[8] = { NULL };
+    IWICColorContext *profile_ctx = NULL;
+    UINT context_count = 0;
+    WICPixelFormatGUID fmt = GUID_WICPixelFormatUndefined;
+    const src_format *spec = NULL;
     UINT orientation = 1;
     UINT w = 0, h = 0;
     img_pixels px = { NULL, 0, 0 };
     bool ok = false;
 
     if (FAILED(decoder->lpVtbl->GetFrame(decoder, 0, &frame)) || !frame) goto cleanup;
+    frame->lpVtbl->GetPixelFormat(frame, &fmt);
+    spec = find_src_format(&fmt);
 
     read_orientation(frame, &orientation);
     source = (IWICBitmapSource *)frame;
@@ -274,30 +558,51 @@ static bool decode_frame(IWICBitmapDecoder *decoder, img_pixels *out)
         }
     }
 
-    if (FAILED(g_factory->lpVtbl->CreateFormatConverter(g_factory, &converter)) || !converter) goto cleanup;
-    if (FAILED(converter->lpVtbl->Initialize(converter, source, IMG_PIXEL_FORMAT,
-                                             WICBitmapDitherTypeNone, NULL, 0.0,
-                                             WICBitmapPaletteTypeCustom)))
-        goto cleanup;
-    if (FAILED(converter->lpVtbl->GetSize(converter, &w, &h))) goto cleanup;
-    if (w == 0 || h == 0) goto cleanup;
-    if (!pixels_alloc((int)w, (int)h, &px)) goto cleanup;
+    /* Colour contexts are cheap to grab and needed for CMYK transforms as
+     * well as for the ICC the caller may want back. */
+    context_count = frame_color_contexts(frame, ctxs, 8, &profile_ctx);
 
-    UINT stride = w * 4u;
-    if (FAILED(converter->lpVtbl->CopyPixels(converter, NULL, stride, stride * h, px.rgba))) goto cleanup;
+    if (spec && spec->kind == IMG_KIND_16) {
+        ok = decode_16bit(source, spec, &px);
+    } else if (spec && spec->kind == IMG_KIND_CMYK) {
+        ok = profile_ctx ? decode_cmyk_transform(source, profile_ctx, &px) : false;
+        if (!ok) ok = decode_cmyk_naive(source, spec, &px);
+    } else {
+        if (FAILED(g_factory->lpVtbl->CreateFormatConverter(g_factory, &converter)) || !converter)
+            goto cleanup;
+        if (FAILED(converter->lpVtbl->Initialize(converter, source, IMG_PIXEL_FORMAT,
+                                                 WICBitmapDitherTypeNone, NULL, 0.0,
+                                                 WICBitmapPaletteTypeCustom)))
+            goto cleanup;
+        if (FAILED(converter->lpVtbl->GetSize(converter, &w, &h))) goto cleanup;
+        if (w == 0 || h == 0) goto cleanup;
+        if (!img__pixels_alloc((int)w, (int)h, &px)) goto cleanup;
+        UINT stride = w * 4u;
+        if (FAILED(converter->lpVtbl->CopyPixels(converter, NULL, stride, stride * h, px.rgba)))
+            goto cleanup;
+        ok = true;
+    }
+    if (!ok) goto cleanup;
 
+    if (icc && icc_size && profile_ctx && format_is_rgb_family(&fmt)) {
+        *icc = context_profile_bytes(profile_ctx, icc_size);
+        if (!*icc) *icc_size = 0;
+    }
     *out = px;
+    px.rgba = NULL;
     ok = true;
 
 cleanup:
-    if (!ok) img_free(&px);
+    img_free(&px);
+    for (UINT i = 0; i < context_count; i++) ctxs[i]->lpVtbl->Release(ctxs[i]);
     if (converter) converter->lpVtbl->Release(converter);
     if (rotator) rotator->lpVtbl->Release(rotator);
     if (frame) frame->lpVtbl->Release(frame);
     return ok;
 }
 
-bool img_decode_file(const char *utf8_path, img_pixels *out)
+static bool decode_file_common(const char *utf8_path, img_pixels *out,
+                               unsigned char **icc, size_t *icc_size)
 {
     IWICBitmapDecoder *decoder = NULL;
     wchar_t *path;
@@ -307,21 +612,24 @@ bool img_decode_file(const char *utf8_path, img_pixels *out)
     out->rgba = NULL;
     out->w = 0;
     out->h = 0;
+    if (icc) *icc = NULL;
+    if (icc_size) *icc_size = 0;
     if (!utf8_path || !*utf8_path || !img_init()) return false;
 
-    path = utf8_to_wide(utf8_path);
+    path = img__utf8_to_wide(utf8_path);
     if (!path) return false;
     HRESULT hr = g_factory->lpVtbl->CreateDecoderFromFilename(
         g_factory, path, NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
     free(path);
     if (FAILED(hr) || !decoder) return false;
 
-    ok = decode_frame(decoder, out);
+    ok = decode_frame(decoder, out, icc, icc_size);
     decoder->lpVtbl->Release(decoder);
     return ok;
 }
 
-bool img_decode_memory(const void *data, size_t size, img_pixels *out)
+static bool decode_memory_common(const void *data, size_t size, img_pixels *out,
+                                 unsigned char **icc, size_t *icc_size)
 {
     IWICBitmapDecoder *decoder = NULL;
     IStream *stream;
@@ -330,6 +638,8 @@ bool img_decode_memory(const void *data, size_t size, img_pixels *out)
     out->rgba = NULL;
     out->w = 0;
     out->h = 0;
+    if (icc) *icc = NULL;
+    if (icc_size) *icc_size = 0;
     if (!data || size < 8 || size > (size_t)UINT_MAX || !img_init()) return false;
 
     stream = SHCreateMemStream((const BYTE *)data, (UINT)size);
@@ -340,9 +650,36 @@ bool img_decode_memory(const void *data, size_t size, img_pixels *out)
     stream->lpVtbl->Release(stream);
 
     if (FAILED(hr) || !decoder) return false;
-    bool ok = decode_frame(decoder, out);
+    bool ok = decode_frame(decoder, out, icc, icc_size);
     decoder->lpVtbl->Release(decoder);
     return ok;
+}
+
+bool img_decode_file(const char *utf8_path, img_pixels *out)
+{
+    return decode_file_common(utf8_path, out, NULL, NULL);
+}
+
+bool img_decode_file_ex(const char *utf8_path, img_pixels *out,
+                        unsigned char **icc, size_t *icc_size)
+{
+    return decode_file_common(utf8_path, out, icc, icc_size);
+}
+
+bool img_decode_memory(const void *data, size_t size, img_pixels *out)
+{
+    return decode_memory_common(data, size, out, NULL, NULL);
+}
+
+bool img_decode_memory_ex(const void *data, size_t size, img_pixels *out,
+                          unsigned char **icc, size_t *icc_size)
+{
+    return decode_memory_common(data, size, out, icc, icc_size);
+}
+
+void img_free_icc(unsigned char *icc)
+{
+    free(icc);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -352,10 +689,14 @@ bool img_decode_memory(const void *data, size_t size, img_pixels *out)
 /* WIC's PNG encoder only really supports 32bppBGRA: asking for 32bppRGBA
  * succeeds but hands back the BGRA GUID, so the channel order is swapped by
  * hand when that happens. Alpha stays straight in both cases - no premultiply
- * and no colour management, so a round trip is bit exact. */
-static bool png_write_frame(IWICBitmapEncoder *encoder, const img_pixels *p)
+ * and no colour management, so a round trip is bit exact. `icc` (when given)
+ * lands in an iCCP chunk via a frame colour context, matching the reference's
+ * save_png. A profile WIC refuses is skipped, never fatal. */
+static bool png_write_frame(IWICBitmapEncoder *encoder, const img_pixels *p,
+                            const unsigned char *icc, size_t icc_size)
 {
     IWICBitmapFrameEncode *frame = NULL;
+    IWICColorContext *ctx = NULL;
     IPropertyBag2 *options = NULL;
     uint8_t *bgra = NULL;
     const uint8_t *source;
@@ -369,6 +710,12 @@ static bool png_write_frame(IWICBitmapEncoder *encoder, const img_pixels *p)
 
     GUID format = GUID_WICPixelFormat32bppRGBA;
     if (FAILED(frame->lpVtbl->SetPixelFormat(frame, &format))) goto cleanup;
+
+    if (icc && icc_size && icc_size <= UINT_MAX &&
+        SUCCEEDED(g_factory->lpVtbl->CreateColorContext(g_factory, &ctx)) && ctx &&
+        SUCCEEDED(ctx->lpVtbl->InitializeFromMemory(ctx, (const BYTE *)icc, (UINT)icc_size))) {
+        frame->lpVtbl->SetColorContexts(frame, 1, &ctx);   /* best effort */
+    }
 
     if (IsEqualGUID(&format, &GUID_WICPixelFormat32bppRGBA)) {
         source = p->rgba;
@@ -396,6 +743,7 @@ static bool png_write_frame(IWICBitmapEncoder *encoder, const img_pixels *p)
 
 cleanup:
     free(bgra);
+    if (ctx) ctx->lpVtbl->Release(ctx);
     if (options) options->lpVtbl->Release(options);
     if (frame) frame->lpVtbl->Release(frame);
     return ok;
@@ -460,8 +808,9 @@ cleanup:
 }
 
 /* Opens an encoder on `stream` (file-backed or memory-backed, both are plain
- * IStreams) and writes one frame. */
-static bool encode_stream(IStream *stream, const img_pixels *p, bool png, int quality)
+ * IStreams) and writes one frame. `icc` is only honoured for PNG. */
+static bool encode_stream(IStream *stream, const img_pixels *p, bool png, int quality,
+                          const unsigned char *icc, size_t icc_size)
 {
     IWICBitmapEncoder *encoder = NULL;
     REFGUID container = png ? &GUID_ContainerFormatPng : &GUID_ContainerFormatJpeg;
@@ -474,7 +823,8 @@ static bool encode_stream(IStream *stream, const img_pixels *p, bool png, int qu
     if (FAILED(g_factory->lpVtbl->CreateEncoder(g_factory, container, NULL, &encoder)) || !encoder)
         return false;
     if (SUCCEEDED(encoder->lpVtbl->Initialize(encoder, stream, WICBitmapEncoderNoCache))) {
-        ok = png ? png_write_frame(encoder, p) : jpeg_write_frame(encoder, p, quality);
+        ok = png ? png_write_frame(encoder, p, icc, icc_size)
+                 : jpeg_write_frame(encoder, p, quality);
     }
     encoder->lpVtbl->Release(encoder);
     return ok;
@@ -508,7 +858,8 @@ static bool stream_to_buffer(IStream *stream, void **out, size_t *size)
     return true;
 }
 
-static bool encode_file(const char *utf8_path, const img_pixels *p, bool png, int quality)
+static bool encode_file(const char *utf8_path, const img_pixels *p, bool png, int quality,
+                        const unsigned char *icc, size_t icc_size)
 {
     IWICStream *stream = NULL;
     wchar_t *path;
@@ -517,13 +868,13 @@ static bool encode_file(const char *utf8_path, const img_pixels *p, bool png, in
 
     if (!utf8_path || !*utf8_path || !p || !p->rgba || p->w <= 0 || p->h <= 0) return false;
     if (!img_init()) return false;
-    path = utf8_to_wide(utf8_path);
+    path = img__utf8_to_wide(utf8_path);
     if (!path) return false;
 
     if (SUCCEEDED(g_factory->lpVtbl->CreateStream(g_factory, &stream)) && stream) {
         if (SUCCEEDED(stream->lpVtbl->InitializeFromFilename(stream, path, GENERIC_WRITE))) {
             created = true;
-            ok = encode_stream((IStream *)stream, p, png, quality);
+            ok = encode_stream((IStream *)stream, p, png, quality, icc, icc_size);
         }
     }
     if (stream) stream->lpVtbl->Release(stream);
@@ -536,7 +887,7 @@ static bool encode_file(const char *utf8_path, const img_pixels *p, bool png, in
  * round their size up past the IEND chunk. Cut the buffer at IEND so strict
  * decoders never see trailing bytes. Anything that is not a PNG header is
  * passed through untouched and judged by WIC. */
-static size_t png_trim_length(const uint8_t *data, size_t size)
+size_t img__png_trim_length(const uint8_t *data, size_t size)
 {
     static const uint8_t signature[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
     size_t offset = 8;
@@ -553,7 +904,9 @@ static size_t png_trim_length(const uint8_t *data, size_t size)
     return size;
 }
 
-static bool encode_memory(const img_pixels *p, bool png, int quality, void **out, size_t *size)
+static bool encode_memory(const img_pixels *p, bool png, int quality,
+                          const unsigned char *icc, size_t icc_size,
+                          void **out, size_t *size)
 {
     IStream *stream = NULL;
     bool ok;
@@ -565,11 +918,12 @@ static bool encode_memory(const img_pixels *p, bool png, int quality, void **out
     if (!img_init()) return false;
 
     if (FAILED(CreateStreamOnHGlobal(NULL, TRUE, &stream)) || !stream) return false;
-    ok = encode_stream(stream, p, png, quality) && stream_to_buffer(stream, out, size);
+    ok = encode_stream(stream, p, png, quality, icc, icc_size) &&
+         stream_to_buffer(stream, out, size);
     stream->lpVtbl->Release(stream);
     if (ok && png) {
         /* The HGLOBAL behind the stream can be larger than the PNG itself. */
-        size_t exact = png_trim_length((const uint8_t *)*out, *size);
+        size_t exact = img__png_trim_length((const uint8_t *)*out, *size);
         if (exact >= 8 && exact <= *size) *size = exact;
     }
     if (!ok) {
@@ -582,22 +936,34 @@ static bool encode_memory(const img_pixels *p, bool png, int quality, void **out
 
 bool img_encode_png(const char *utf8_path, const img_pixels *p)
 {
-    return encode_file(utf8_path, p, true, 0);
+    return encode_file(utf8_path, p, true, 0, NULL, 0);
 }
 
 bool img_encode_jpeg(const char *utf8_path, const img_pixels *p, int quality)
 {
-    return encode_file(utf8_path, p, false, quality);
+    return encode_file(utf8_path, p, false, quality, NULL, 0);
+}
+
+bool img_encode_png_icc(const char *utf8_path, const img_pixels *p,
+                        const unsigned char *icc, size_t icc_size)
+{
+    return encode_file(utf8_path, p, true, 0, icc, icc_size);
 }
 
 bool img_encode_png_memory(const img_pixels *p, void **out, size_t *size)
 {
-    return encode_memory(p, true, 0, out, size);
+    return encode_memory(p, true, 0, NULL, 0, out, size);
+}
+
+bool img_encode_png_memory_icc(const img_pixels *p, const unsigned char *icc,
+                               size_t icc_size, void **out, size_t *size)
+{
+    return encode_memory(p, true, 0, icc, icc_size, out, size);
 }
 
 bool img_encode_jpeg_memory(const img_pixels *p, int quality, void **out, size_t *size)
 {
-    return encode_memory(p, false, quality, out, size);
+    return encode_memory(p, false, quality, NULL, 0, out, size);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -638,7 +1004,7 @@ bool img_resize(const img_pixels *src, int w, int h, img_pixels *out)
             hr = scaler->lpVtbl->Initialize(scaler, (IWICBitmapSource *)bitmap, (UINT)w, (UINT)h,
                                             WICBitmapInterpolationModeCubic);
         }
-        if (SUCCEEDED(hr) && pixels_alloc(w, h, &px)) {
+        if (SUCCEEDED(hr) && img__pixels_alloc(w, h, &px)) {
             UINT out_stride = (UINT)w * 4u;
             if (SUCCEEDED(scaler->lpVtbl->CopyPixels(scaler, NULL, out_stride,
                                                      out_stride * (UINT)h, px.rgba))) {
@@ -666,7 +1032,7 @@ bool img_thumbnail(const img_pixels *src, int max_side, img_pixels *out)
     if (src->w <= max_side && src->h <= max_side) {
         /* Never upscale: hand back a copy and let the caller treat it alike. */
         img_pixels copy;
-        if (!pixels_alloc(src->w, src->h, &copy)) return false;
+        if (!img__pixels_alloc(src->w, src->h, &copy)) return false;
         memcpy(copy.rgba, src->rgba, (size_t)src->w * (size_t)src->h * 4u);
         *out = copy;
         return true;
@@ -695,319 +1061,3 @@ bool img_has_alpha(const img_pixels *p)
     return false;
 }
 
-/* ------------------------------------------------------------------------- */
-/* Clipboard                                                                  */
-/* ------------------------------------------------------------------------- */
-
-/* Another process may hold the clipboard for a few milliseconds around a copy;
- * retry briefly instead of failing the user's paste/picture operation. */
-static bool clipboard_open(void)
-{
-    for (int attempt = 0; attempt < 20; attempt++) {
-        if (OpenClipboard(NULL)) return true;
-        Sleep(10);
-    }
-    return false;
-}
-
-typedef struct channel_mask {
-    uint32_t mask;
-    unsigned shift;
-    unsigned bits;
-} channel_mask;
-
-static channel_mask channel_mask_make(uint32_t mask)
-{
-    channel_mask m;
-    uint32_t bits;
-
-    m.mask = mask;
-    m.shift = 0;
-    m.bits = 0;
-    if (!mask) return m;
-    while (m.shift < 32 && ((mask >> m.shift) & 1u) == 0) m.shift++;
-    bits = mask >> m.shift;
-    while ((bits & 1u) != 0) {
-        m.bits++;
-        bits >>= 1;
-    }
-    return m;
-}
-
-/* Extracts one channel from a little-endian pixel word and scales it to 8 bit
- * with rounding, so 16-bit or 5-6-5 DIBs survive too. */
-static uint8_t channel_get(uint32_t pixel, channel_mask m)
-{
-    uint32_t value;
-    uint32_t max_value;
-
-    if (!m.mask || !m.bits) return 0;
-    value = (pixel & m.mask) >> m.shift;
-    if (m.bits == 8) return (uint8_t)value;
-    max_value = m.bits >= 32 ? 0xFFFFFFFFu : ((1u << m.bits) - 1u);
-    return (uint8_t)((value * 255u + max_value / 2u) / max_value);
-}
-
-/* Parses a packed DIB (BITMAPINFOHEADER and up). Supports 24/32bpp, BI_RGB,
- * BI_BITFIELDS and BI_ALPHABITFIELDS, bottom-up and top-down. */
-static bool dib_parse(const uint8_t *data, size_t size, img_pixels *out)
-{
-    const BITMAPINFOHEADER *info = (const BITMAPINFOHEADER *)data;
-    uint32_t red_mask = 0, green_mask = 0, blue_mask = 0, alpha_mask = 0;
-    size_t header_size, pixels_offset, stride;
-    int w, h;
-    bool top_down;
-    channel_mask red, green, blue, alpha;
-    img_pixels px = { NULL, 0, 0 };
-    bool ok = false;
-
-    if (!data || size < sizeof(BITMAPINFOHEADER)) return false;
-    if (info->biSize < sizeof(BITMAPINFOHEADER) || info->biSize > size) return false;
-    if (info->biPlanes != 1) return false;
-
-    w = (int)info->biWidth;
-    h = (int)info->biHeight;
-    top_down = h < 0;
-    if (top_down) h = -h;
-    if (w <= 0 || h <= 0) return false;
-    if (info->biBitCount != 24 && info->biBitCount != 32) return false;
-
-    header_size = info->biSize;
-    if (info->biCompression == BI_BITFIELDS || info->biCompression == IMG_BI_ALPHABITFIELDS) {
-        if (info->biSize >= 108) {
-            /* BITMAPV4/V5HEADER carries the masks itself. */
-            const BITMAPV5HEADER *v5 = (const BITMAPV5HEADER *)data;
-            red_mask = v5->bV5RedMask;
-            green_mask = v5->bV5GreenMask;
-            blue_mask = v5->bV5BlueMask;
-            alpha_mask = v5->bV5AlphaMask;
-        } else {
-            size_t mask_bytes = (info->biBitCount == 32 && info->biCompression == IMG_BI_ALPHABITFIELDS)
-                                    ? 16u : 12u;
-            if (header_size + mask_bytes > size) return false;
-            memcpy(&red_mask, data + header_size, 4);
-            memcpy(&green_mask, data + header_size + 4, 4);
-            memcpy(&blue_mask, data + header_size + 8, 4);
-            if (mask_bytes == 16u) memcpy(&alpha_mask, data + header_size + 12, 4);
-            header_size += mask_bytes;
-        }
-        if (!red_mask && !green_mask && !blue_mask) return false;
-    } else if (info->biCompression != BI_RGB) {
-        return false;   /* RLE/JPEG/PNG-embedded DIBs are not worth supporting */
-    } else {
-        /* BI_RGB declares no channel masks; the layout is fixed BGR(A). A
-         * 32bpp BI_RGB byte 3 is padding, so it is not used as alpha. */
-        red_mask = 0x00FF0000u;
-        green_mask = 0x0000FF00u;
-        blue_mask = 0x000000FFu;
-    }
-
-    pixels_offset = header_size;
-    stride = (((size_t)w * info->biBitCount + 31u) / 32u) * 4u;
-    if (pixels_offset + stride * (size_t)h > size) return false;
-
-    if (!pixels_alloc(w, h, &px)) return false;
-
-    red = channel_mask_make(red_mask);
-    green = channel_mask_make(green_mask);
-    blue = channel_mask_make(blue_mask);
-    alpha = channel_mask_make(alpha_mask);
-
-    for (int y = 0; y < h; y++) {
-        int source_y = top_down ? y : (h - 1 - y);
-        const uint8_t *row = data + pixels_offset + stride * (size_t)source_y;
-        uint8_t *dst = px.rgba + (size_t)y * (size_t)w * 4u;
-        for (int x = 0; x < w; x++) {
-            uint32_t word = (uint32_t)row[0] | ((uint32_t)row[1] << 8) | ((uint32_t)row[2] << 16);
-            uint8_t a = 255;
-            if (info->biBitCount == 32) {
-                word |= (uint32_t)row[3] << 24;
-                if (alpha.mask) a = channel_get(word, alpha);
-            }
-            dst[0] = channel_get(word, red);
-            dst[1] = channel_get(word, green);
-            dst[2] = channel_get(word, blue);
-            dst[3] = a;
-            row += info->biBitCount / 8u;
-            dst += 4;
-        }
-    }
-
-    *out = px;
-    ok = true;
-    return ok;
-}
-
-static bool clipboard_get_png(img_pixels *out)
-{
-    UINT format = RegisterClipboardFormatW(L"PNG");
-    HGLOBAL block;
-    const uint8_t *base;
-    SIZE_T size;
-    size_t length;
-    bool ok = false;
-
-    if (!format) return false;
-    block = (HGLOBAL)GetClipboardData(format);
-    if (!block) return false;
-    base = (const uint8_t *)GlobalLock(block);
-    if (!base) return false;
-    size = GlobalSize(block);
-    length = png_trim_length(base, (size_t)size);
-    if (length >= 8) ok = img_decode_memory(base, length, out);
-    GlobalUnlock(block);
-    return ok;
-}
-
-static bool clipboard_get_dib(UINT format, img_pixels *out)
-{
-    HGLOBAL block = (HGLOBAL)GetClipboardData(format);
-    const uint8_t *base;
-    SIZE_T size;
-    bool ok;
-
-    if (!block) return false;
-    base = (const uint8_t *)GlobalLock(block);
-    if (!base) return false;
-    size = GlobalSize(block);
-    ok = dib_parse(base, (size_t)size, out);
-    GlobalUnlock(block);
-    return ok;
-}
-
-bool img_clipboard_has_image(void)
-{
-    UINT png = RegisterClipboardFormatW(L"PNG");
-    if (IsClipboardFormatAvailable(CF_DIBV5)) return true;
-    if (IsClipboardFormatAvailable(CF_DIB)) return true;
-    if (png && IsClipboardFormatAvailable(png)) return true;
-    return false;
-}
-
-bool img_clipboard_get(img_pixels *out)
-{
-    bool ok;
-
-    if (!out) return false;
-    out->rgba = NULL;
-    out->w = 0;
-    out->h = 0;
-    if (!img_init()) return false;
-    if (!clipboard_open()) return false;
-
-    /* PNG first: it is the only lossless, alpha-carrying format here. */
-    ok = clipboard_get_png(out);
-    if (!ok) ok = clipboard_get_dib(CF_DIBV5, out);
-    if (!ok) ok = clipboard_get_dib(CF_DIB, out);
-
-    CloseClipboard();
-    if (!ok) img_free(out);
-    return ok;
-}
-
-/* Borrows the clipboard (already opened and emptied by the caller). */
-static bool clipboard_put_dibv5(const img_pixels *p)
-{
-    size_t header_bytes = sizeof(BITMAPV5HEADER);
-    size_t total = header_bytes + (size_t)p->w * (size_t)p->h * 4u;
-    HGLOBAL block = GlobalAlloc(GMEM_MOVEABLE, total);
-    uint8_t *base;
-    BITMAPV5HEADER *info;
-    uint8_t *dst;
-
-    if (!block) return false;
-    base = (uint8_t *)GlobalLock(block);
-    if (!base) {
-        GlobalFree(block);
-        return false;
-    }
-
-    info = (BITMAPV5HEADER *)base;
-    memset(info, 0, header_bytes);
-    info->bV5Size = (DWORD)header_bytes;
-    info->bV5Width = (LONG)p->w;
-    info->bV5Height = (LONG)p->h;   /* positive: bottom-up, like GDI expects */
-    info->bV5Planes = 1;
-    info->bV5BitCount = 32;
-    info->bV5Compression = BI_BITFIELDS;
-    info->bV5SizeImage = (DWORD)((size_t)p->w * (size_t)p->h * 4u);
-    info->bV5RedMask = 0x00FF0000u;
-    info->bV5GreenMask = 0x0000FF00u;
-    info->bV5BlueMask = 0x000000FFu;
-    info->bV5AlphaMask = 0xFF000000u;
-    info->bV5CSType = LCS_sRGB;
-
-    dst = base + header_bytes;
-    for (int y = 0; y < p->h; y++) {
-        const uint8_t *src = p->rgba + (size_t)(p->h - 1 - y) * (size_t)p->w * 4u;
-        for (int x = 0; x < p->w; x++) {
-            dst[0] = src[2];
-            dst[1] = src[1];
-            dst[2] = src[0];
-            dst[3] = src[3];
-            src += 4;
-            dst += 4;
-        }
-    }
-    GlobalUnlock(block);
-
-    if (!SetClipboardData(CF_DIBV5, block)) {
-        GlobalFree(block);
-        return false;
-    }
-    return true;
-}
-
-static bool clipboard_put_png(const img_pixels *p)
-{
-    UINT format = RegisterClipboardFormatW(L"PNG");
-    void *png = NULL;
-    size_t size = 0;
-    HGLOBAL block;
-    void *base;
-
-    if (!format || !img_encode_png_memory(p, &png, &size) || size == 0) {
-        free(png);
-        return false;
-    }
-    block = GlobalAlloc(GMEM_MOVEABLE, size);
-    if (!block) {
-        free(png);
-        return false;
-    }
-    base = GlobalLock(block);
-    if (!base) {
-        GlobalFree(block);
-        free(png);
-        return false;
-    }
-    memcpy(base, png, size);
-    GlobalUnlock(block);
-    free(png);
-
-    if (!SetClipboardData(format, block)) {
-        GlobalFree(block);
-        return false;
-    }
-    return true;
-}
-
-bool img_clipboard_set(const img_pixels *p)
-{
-    bool ok = false;
-
-    if (!p || !p->rgba || p->w <= 0 || p->h <= 0) return false;
-    if ((uint64_t)p->w * (uint64_t)p->h * 4u > IMG_MAX_BYTES) return false;
-    if (!img_init()) return false;
-    if (!clipboard_open()) return false;
-
-    if (EmptyClipboard()) {
-        /* Both flavours: CF_DIBV5 for classic GDI consumers, CF_PNG for apps
-         * that keep alpha and avoid a lossy 8-bit conversion. */
-        bool dib_ok = clipboard_put_dibv5(p);
-        bool png_ok = clipboard_put_png(p);
-        ok = dib_ok || png_ok;
-    }
-    CloseClipboard();
-    return ok;
-}
