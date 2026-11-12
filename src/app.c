@@ -330,6 +330,9 @@ static job *job_add_decoded(app_state *st, loader_result *r) {
     path_stem(j->stem, sizeof j->stem, j->name);
 
     j->orig = r->full;
+    /* ownership moves to the job: the caller still runs img_free() on every
+     * result field, so clear this one or the pixels are freed twice */
+    r->full = (img_pixels){ 0 };
     j->has_alpha = r->has_alpha;
     j->status = JOB_QUEUED;
     j->down_pct = st->down_pct;
@@ -340,7 +343,7 @@ static job *job_add_decoded(app_state *st, loader_result *r) {
     mask_init(&j->m, r->full.w, r->full.h);
     out_paths(st, j);
 
-    const img_pixels *disp = r->display.rgba ? &r->display : &r->full;
+    const img_pixels *disp = r->display.rgba ? &r->display : &j->orig;
     j->orig_tex = cui_image_create(st->ui, disp->w, disp->h, disp->rgba);
     j->disp_w = disp->w;
     j->disp_h = disp->h;
