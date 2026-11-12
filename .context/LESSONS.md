@@ -66,3 +66,40 @@
 间歇偷内存带宽。提高进程优先级无效（不是调度抢占）。
 **修法**：先把隔离场景跑短迭代看 p50/p95 是否分裂；p50 与历史持平+p95 独高 → 环境噪声，
 写进报告如实记录，不要为了消 FAIL 改没问题的代码。等干扰源退出后重跑确认。
+
+## L-010 移交所有权后立刻清零，就别再读它；测试走的捷径会藏住这条路
+
+**现象**：正式版里画笔/橡皮/套索完全按不动（点了画笔图标、按 B/E/L 都无反应），
+但基准 `--protect-e2e` 与全部 12 项交互断言一直是绿的。
+**根因**：`job_add_decoded()` 先把 `r->full` 赋给 `j->orig`，再把 `r->full` 清零
+（防 double-free），随后 `mask_init(&j->m, r->full.w, r->full.h)` 用了 0×0 尺寸，
+calloc 从未发生 → `j->m.px == NULL` → `protect_enter()` 静默 return。
+**测试为何漏掉**：`app_test_add_image` / 粘贴路径走**同步** `job_add()`，
+那里用的是未清零的 `px.w/px.h` —— 测试覆盖的恰恰不是用户走的那条。
+**修法**：读 `j->orig.w/h`（已移交的副本）；e2e 改用 `app_test_enqueue`（真实
+loader 路径）并断言 `j->m.px != NULL`。
+**教训**：① 所有权转移 + 清零之后，再读原变量是必炸模式——把“用谁”和“清谁”
+写在一起才看得见；② e2e 必须走**用户实际走的那条路**，同步捷径只能当单测。
+
+## L-011 事件驱动帧调度下，`now_seconds()` 不是动画时钟
+
+**现象**：处理中环、托盘状态弧、启动 banner 的弧都肉眼卡顿/不动。
+**根因**：CUI 只在 `cui_needs_redraw()`（animating/settle）时连续给帧；
+手绘弧读 `now_seconds()` 画，不置 animating → 过渡结束后帧停了，
+弧只在有输入事件时挪一格。
+**修法**：`fl_spinner()`（仿 `cui__draw_spinner` 形状：暗轨道 + 呼吸头弧）
+统一替代手绘弧，并 `cui_request_redraw()`；其它 now_seconds 动画
+（蒙版淡出、结果交叉淡入、重跑扫条、已保存✓）按需 request_redraw /
+request_wakeup。`ui->time`（`cui_time()`）才是动画时钟。
+
+## L-012 无边框窗口的边缘光标，要同时赢两处
+
+**现象**：拖到窗口边缘时缩放光标很难出现/闪跳。
+**根因**（双份）：① chrome 的 WM_SETCURSOR 对 HTCLIENT 也抢着答 arrow，
+把 CUI 组件悬停光标（hand/ibeam）每次移动都踩掉；② CUI 每帧
+`cui_end_frame → set_cursor` 只看"指针在客户区"——无边框窗口客户区=
+整窗，覆盖到我们自制的 resize band，动画期间每帧把缩放光标踩回箭头。
+**修法**：① WM_SETCURSOR 只认领非客户区命中码（resize 带 + caption），
+HTCLIENT 放行给 CUI 自己的 handler；② 给 vendored `cui_app_win32.c`
+的 `cui__win32_set_cursor` 加 `WM_NCHITTEST == HTCLIENT` 门槛——
+非客户区不应用 widget 光标（对普通 CUI 窗口行为不变）。

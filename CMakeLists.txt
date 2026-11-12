@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.14)
 
 project(anime_denoise
-    VERSION 1.1.0
+    VERSION 1.1.1
     DESCRIPTION "Anime Denoise: native CUI app, ONNX Runtime inference"
     LANGUAGES C RC)
 
