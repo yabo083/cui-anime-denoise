@@ -74,6 +74,11 @@ CUI_API cui_ctx *cui_app_ui(cui_app *app);
 /* Creates the app, calls frame() until the window closes, destroys it. */
 CUI_API int cui_app_run(const cui_app_desc *desc, void (*frame)(cui_ctx *ui, void *user), void *user);
 
+/* Manual-loop apps (cui_app_frame) hand their frame callback to the app so the
+ * backend can repaint live while the OS runs its modal resize loop instead of
+ * re-showing the stale frame at the old size. cui_app_run sets it itself. */
+CUI_API void cui_app_set_frame(cui_app *app, void (*frame)(cui_ctx *ui, void *user), void *user);
+
 /* The functions below take NULL for "the app that is running", which is how a
  * cui_app_run callback reaches its window: cui_app_quit(NULL). */
 /* Ends the loop after the current frame: cui_app_frame returns false, cui_app_run returns. */

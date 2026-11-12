@@ -16,7 +16,7 @@
 #include <shellapi.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.0"
+#define APP_VERSION "1.1.2"
 #endif
 
 static void parse_command_line(app_state *st) {
@@ -30,6 +30,14 @@ static void parse_command_line(app_state *st) {
         if (st->pending) st->pending[st->pending_n++] = _strdup(u8);
     }
     if (argv) LocalFree(argv);
+}
+
+/* The frame callback CUI invokes from inside the OS's modal resize loop
+ * (cui_app_set_frame): without it the backend would keep re-showing the last
+ * frame at its old size, leaving blank bands while the window is dragged. */
+static cui_app *g_app;
+static void frame_cb(cui_ctx *ui, void *user) {
+    app_frame(g_app, ui, (app_state *)user);
 }
 
 int main(void) {
@@ -71,6 +79,8 @@ int main(void) {
     }
     chrome_attach(cui_app_native_window(app), UI_TITLEBAR);
     chrome_set_dark(cui_get_theme_mode(cui_app_ui(app)) == CUI_THEME_DARK);
+    g_app = app;
+    cui_app_set_frame(app, frame_cb, &st);
 
     while (cui_app_frame(app)) {
         cui_ctx *ui = cui_app_ui(app);
