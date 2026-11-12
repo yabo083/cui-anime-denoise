@@ -195,10 +195,13 @@ static LRESULT CALLBACK chrome_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_MOUSEWHEEL: {
-        /* keep wheel notches for the UI instead of letting CUI scroll whatever
-         * sits under the pointer; the UI takes them once per frame with
-         * chrome_take_wheel() and decides what they mean (zoom on the canvas) */
+        /* keep wheel notches for the UI; it takes them once per frame with
+         * chrome_take_wheel() and decides what they mean (zoom on the canvas).
+         * CUI still gets the message so its scroll views and sheets answer the
+         * wheel -- the app only treats the notches as a zoom when no modal is
+         * up and the canvas owns the pointer. */
         g_wheel += (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
+        CallWindowProcW(g_orig, h, msg, wp, lp);
         return 0;
     }
 
