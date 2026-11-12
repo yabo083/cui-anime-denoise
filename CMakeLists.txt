@@ -69,9 +69,11 @@ target_link_libraries(anime_engine PUBLIC dxgi winhttp bcrypt)
 set_source_files_properties(third_party/pocketfft/pocketfft_double.c
     PROPERTIES COMPILE_OPTIONS "/wd4244;/wd4267;/wd4702")
 
+configure_file(src/app.rc.in ${CMAKE_BINARY_DIR}/app.rc @ONLY)
+
 add_executable(AnimeDenoise
     src/main.c
-    src/app.rc)
+    ${CMAKE_BINARY_DIR}/app.rc)
 
 target_compile_definitions(anime_core PUBLIC
     APP_VERSION="${PROJECT_VERSION}"

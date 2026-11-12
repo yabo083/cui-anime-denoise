@@ -1,11 +1,12 @@
-/* Window and file icon. The .ico is the upstream app's (MIT). */
+/* Window and file icon. The .ico is the upstream app's (MIT).
+ * configure_file() stamps the project version into the version block. */
 #include <windows.h>
 
-IDI_ICON1 ICON "../assets/app.ico"
+IDI_ICON1 ICON "@PROJECT_SOURCE_DIR@/assets/app.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,1,0,0
- PRODUCTVERSION 1,1,0,0
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -18,11 +19,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Anime Denoise"
             VALUE "FileDescription", "Anime Denoise"
-            VALUE "FileVersion", "1.1.0"
+            VALUE "FileVersion", "@PROJECT_VERSION@"
             VALUE "InternalName", "AnimeDenoise"
             VALUE "OriginalFilename", "AnimeDenoise.exe"
             VALUE "ProductName", "Anime Denoise"
-            VALUE "ProductVersion", "1.1.0"
+            VALUE "ProductVersion", "@PROJECT_VERSION@"
         END
     END
     BLOCK "VarFileInfo"
