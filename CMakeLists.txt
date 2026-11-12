@@ -20,6 +20,7 @@ add_subdirectory(third_party/CUI)
 
 # Worker bridge sources (src/backend.c) join this same target when the integration lands.
 add_executable(denoise_app
-    src/main.c)
+    src/main.c
+    src/backend.c)
 target_link_libraries(denoise_app PRIVATE cui::cui)
 cui_app_target(denoise_app)

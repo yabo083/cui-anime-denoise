@@ -6,8 +6,10 @@ a Python sidecar that wraps the `gpt-anime-denoise` denoiser.
 
 ## Status
 
-Skeleton: the CUI window builds and opens. The denoise pipeline (Python worker + C bridge)
-lands in the same tree.
+Working v1: drop or browse images → serial denoise queue → before/after compare →
+PNG output in `outputs/` (next to the exe). GPU badge, per-item cancel, worker-crash
+restart, strength presets (Soft/Balanced/Strong) plus Scale %/L0 sliders.
+Brush/lasso masking is not implemented (`# TODO mask` in `src/main.c`).
 
 ## Architecture
 
@@ -37,9 +39,9 @@ Protocol (one JSON object per line, stderr left for worker logs):
 | `{"cmd":"cancel","id":N}` | `{"type":"cancelled","id":N}` |
 | `{"cmd":"shutdown"}` | `{"type":"bye"}`, then exit |
 
-The worker monkey-patches the module globals `denoise.DOWN` / `denoise.L0` before calling
-`denoise.run(...)`, because that is how the denoiser reads its parameters.
-
+The worker calls `denoise.sr_at(...)` and `denoise.l0_smooth(...)` directly (not `denoise.run`,
+whose `lam`/`stop` arguments cannot be wired through), patching `denoise.DOWN` around the call.
+`done` carries `preview_b64` (result) and `src_preview_b64` (source, for formats CUI cannot load).
 ## Build
 
 Requirements: Visual Studio with the C++ x64 toolset (MSVC 14.44 here), and PowerShell 7.
