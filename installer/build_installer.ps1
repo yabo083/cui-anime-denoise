@@ -9,11 +9,24 @@
     2. Locates ISCC.exe; exits with code 2 and installation instructions when
        Inno Setup 6 is not installed (nothing is installed automatically).
     3. Runs ..\build.ps1 (Release) unless -SkipBuild.
-    4. Stages AnimeDenoise.exe, runtime\, models\, assets\ and the optional
-       docs into dist\stage and verifies the required files are present.
+    4. Stages AnimeDenoise.exe, anime-denoise.exe, runtime\, the shipped subset
+       of models\, assets\ and the docs into dist\stage and verifies the
+       required files are present.
     5. Runs ISCC.exe with /DAppVersion=<version> and reports the setup size.
 
     Result: dist\AnimeDenoise-<version>-setup.exe
+
+    PREREQUISITES (run once per machine, their outputs land in build\):
+      pwsh -NoProfile -File tools\fetch_deps.ps1
+        downloads the pinned ONNX Runtime + DirectML NuGet packages and
+        esrgan_anime6b_x4.onnx into build\runtime and build\models.
+      py tools\export_onnx.py (or the equivalent mise task)
+        regenerates models\*.skel.onnx; the skeletons are committed, so this
+        is only needed when the model set changes.
+
+    models\ staging is selective on purpose: esrgan_anime6b_x4.onnx and the
+    *.skel.onnx skeletons ship; the full-weight *.onnx blobs are export
+    intermediates the engine never loads and would only bloat the payload.
 
 .EXAMPLE
     pwsh -NoProfile -File installer\build_installer.ps1
@@ -121,8 +134,38 @@ if (Test-Path -LiteralPath $cliPath -PathType Leaf) {
     Copy-Item -LiteralPath $cliPath -Destination (Join-Path $stageDir 'anime-denoise.exe')
 }
 Copy-Item -LiteralPath (Join-Path $buildDir 'runtime') -Destination (Join-Path $stageDir 'runtime') -Recurse
-Copy-Item -LiteralPath (Join-Path $buildDir 'models') -Destination (Join-Path $stageDir 'models') -Recurse
+
+# models\: ship esrgan + the weightless skeletons; the full *.onnx blobs are
+# export intermediates the engine never loads (CUGAN/APISR run skel + the
+# user-downloaded .pth).
+New-Item -ItemType Directory -Path (Join-Path $stageDir 'models') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $buildDir 'models\esrgan_anime6b_x4.onnx') `
+           -Destination (Join-Path $stageDir 'models\esrgan_anime6b_x4.onnx')
+Get-ChildItem -LiteralPath (Join-Path $buildDir 'models') -Filter '*.skel.onnx' -File |
+    Copy-Item -Destination (Join-Path $stageDir 'models')
+
 Copy-Item -LiteralPath (Join-Path $root 'assets') -Destination (Join-Path $stageDir 'assets') -Recurse
+
+# licenses that live under third_party\ in the repo must ride along in the
+# installed layout or the paths in THIRD-PARTY-NOTICES.txt dangle
+$licDir = Join-Path $stageDir 'assets\licenses'
+New-Item -ItemType Directory -Path $licDir -Force | Out-Null
+$licenseFiles = @{
+    'third_party\onnxruntime\LICENSE.txt'                      = 'LICENSE-onnxruntime.txt'
+    'third_party\onnxruntime\ThirdPartyNotices.txt'            = 'ThirdPartyNotices-onnxruntime.txt'
+    'third_party\onnxruntime\LICENSE-DirectML.txt'             = 'LICENSE-DirectML.txt'
+    'third_party\onnxruntime\ThirdPartyNotices-DirectML.txt'   = 'ThirdPartyNotices-DirectML.txt'
+    'third_party\pocketfft\LICENSE.md'                         = 'LICENSE-pocketfft.md'
+    'third_party\CUI\LICENSE'                                  = 'LICENSE-CUI.txt'
+}
+foreach ($src in $licenseFiles.GetEnumerator()) {
+    $from = Join-Path $root $src.Key
+    if (Test-Path -LiteralPath $from -PathType Leaf) {
+        Copy-Item -LiteralPath $from -Destination (Join-Path $licDir $src.Value)
+    } else {
+        Write-Host "  note: $($src.Key) not present, skipped" -ForegroundColor DarkGray
+    }
+}
 
 foreach ($doc in @('README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.txt')) {
     $src = Join-Path $root $doc
@@ -135,10 +178,15 @@ foreach ($doc in @('README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.txt')) {
 
 $required = @(
     (Join-Path $stageDir 'AnimeDenoise.exe'),
+    (Join-Path $stageDir 'anime-denoise.exe'),
     (Join-Path $stageDir 'runtime\onnxruntime.dll'),
+    (Join-Path $stageDir 'runtime\onnxruntime_providers_shared.dll'),
     (Join-Path $stageDir 'runtime\DirectML.dll'),
     (Join-Path $stageDir 'models\esrgan_anime6b_x4.onnx'),
-    (Join-Path $stageDir 'assets')
+    (Join-Path $stageDir 'models\cugan_up2x_denoise3x.skel.onnx'),
+    (Join-Path $stageDir 'models\apisr_rrdb_x2.skel.onnx'),
+    (Join-Path $stageDir 'assets'),
+    (Join-Path $stageDir 'THIRD-PARTY-NOTICES.txt')
 )
 $missing = @($required | Where-Object { -not (Test-Path -LiteralPath $_) })
 if ($missing.Count -gt 0) {

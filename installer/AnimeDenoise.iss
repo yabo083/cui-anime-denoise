@@ -50,6 +50,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 RestartApplications=yes
+; broadcast WM_SETTINGCHANGE after install/uninstall so the user PATH edit
+; (task "addpath") reaches Explorer and new shells without a relogin
+ChangesEnvironment=yes
 
 ; assets\app.ico is optional in the repository; only reference it when the
 ; staging step actually produced it.
@@ -78,6 +81,8 @@ SelectTasksLabel2=请选择安装程序在安装 [name] 时要执行的其他任
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "addpath"; Description: "把安装目录加入用户 PATH（anime-denoise 命令行随处可用）"; GroupDescription: "集成："
+Name: "contextmenu"; Description: "图片文件右键菜单加入「Anime Denoise 去噪」"; GroupDescription: "集成："
 
 [Files]
 Source: "{#StageDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -102,6 +107,25 @@ Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
+[Registry]
+; Context-menu verb on image files. The perceived-type branch covers every
+; extension Windows already tags PerceivedType=image (png, jpg, jpeg, bmp,
+; gif, tif, tiff, webp on current builds); the explicit entries below cover
+; the formats that carry no default perceived type. One verb name either
+; way, so a file never shows it twice.
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\image\shell\AnimeDenoise"; ValueType: string; ValueData: "用 Anime Denoise 去噪"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\image\shell\AnimeDenoise"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#AppExeName}"; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\image\shell\AnimeDenoise\command"; ValueType: string; ValueData: """{app}\{#AppExeName}"" ""%1"""; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.avif\shell\AnimeDenoise"; ValueType: string; ValueData: "用 Anime Denoise 去噪"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.avif\shell\AnimeDenoise"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#AppExeName}"; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.avif\shell\AnimeDenoise\command"; ValueType: string; ValueData: """{app}\{#AppExeName}"" ""%1"""; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.heic\shell\AnimeDenoise"; ValueType: string; ValueData: "用 Anime Denoise 去噪"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.heic\shell\AnimeDenoise"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#AppExeName}"; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.heic\shell\AnimeDenoise\command"; ValueType: string; ValueData: """{app}\{#AppExeName}"" ""%1"""; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.heif\shell\AnimeDenoise"; ValueType: string; ValueData: "用 Anime Denoise 去噪"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.heif\shell\AnimeDenoise"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#AppExeName}"; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.heif\shell\AnimeDenoise\command"; ValueType: string; ValueData: """{app}\{#AppExeName}"" ""%1"""; Tasks: contextmenu
+
 [Run]
 Filename: "{app}\{#AppExeName}"; Flags: nowait postinstall skipifsilent
 
@@ -111,12 +135,84 @@ Filename: "{app}\{#AppExeName}"; Flags: nowait postinstall skipifsilent
 Type: filesandordirs; Name: "{app}"
 
 [Code]
+{ --- user PATH add/remove for the anime-denoise CLI (task "addpath") --- }
+
+function PathHasSegment(Paths, Seg: String): Boolean;
+var
+  Hay: String;
+begin
+  { compare whole ';'-separated segments, case-insensitive, tolerant of a
+    stored trailing backslash }
+  while (Length(Seg) > 0) and (Seg[Length(Seg)] = '\') do
+    Seg := Copy(Seg, 1, Length(Seg) - 1);
+  Hay := ';' + Uppercase(Paths) + ';';
+  Result := (Pos(';' + Uppercase(Seg) + ';', Hay) > 0) or
+            (Pos(';' + Uppercase(Seg) + '\;', Hay) > 0);
+end;
+
+procedure PathAdd(Dir: String);
+var
+  Paths: String;
+begin
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', Paths) then
+    Paths := '';
+  if PathHasSegment(Paths, Dir) then
+    Exit;
+  if (Paths <> '') and (Paths[Length(Paths)] <> ';') then
+    Paths := Paths + ';';
+  Paths := Paths + Dir;
+  RegWriteExpandStringValue(HKCU, 'Environment', 'Path', Paths);
+end;
+
+procedure PathRemove(Dir: String);
+var
+  Paths, Seg, Item, Cmp, NewPath: String;
+  P: Integer;
+begin
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', Paths) then
+    Exit;
+  Seg := Dir;
+  while (Length(Seg) > 0) and (Seg[Length(Seg)] = '\') do
+    Seg := Copy(Seg, 1, Length(Seg) - 1);
+  NewPath := '';
+  repeat
+    P := Pos(';', Paths);
+    if P = 0 then P := Length(Paths) + 1;
+    Item := Copy(Paths, 1, P - 1);
+    Paths := Copy(Paths, P + 1, Length(Paths));
+    Cmp := Item;
+    while (Length(Cmp) > 0) and (Cmp[Length(Cmp)] = '\') do
+      Cmp := Copy(Cmp, 1, Length(Cmp) - 1);
+    { keep the ORIGINAL segment text; only the comparison is normalized }
+    if (Item <> '') and (Uppercase(Cmp) <> Uppercase(Seg)) then
+    begin
+      if NewPath <> '' then
+        NewPath := NewPath + ';';
+      NewPath := NewPath + Item;
+    end;
+  until Length(Paths) = 0;
+  if NewPath <> '' then
+    RegWriteExpandStringValue(HKCU, 'Environment', 'Path', NewPath)
+  else
+    RegDeleteValue(HKCU, 'Environment', 'Path');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    if WizardIsTaskSelected('addpath') then
+      PathAdd(ExpandConstant('{app}'));
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
+  { always take our segment back out of the user PATH; a no-op when the
+    task was never run or the value is absent }
+  PathRemove(ExpandConstant('{app}'));
   { Silent uninstall (/SILENT, /VERYSILENT) never touches user data. }
   if UninstallSilent then
     Exit;
