@@ -13,12 +13,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "backend.h"
 #include "chrome.h"
 #include "config.h"
+#include "denoiser.h"
 #include "img.h"
 #include "mask.h"
-#include "runtime.h"
 #include "update.h"
 
 /* ------------------------------------------------------------------------ */
@@ -68,11 +67,11 @@ typedef struct job {
     char path[PATH_CAP];       /* UTF-8 source path */
     char name[192];            /* basename */
     char stem[184];            /* basename without extension */
-    char out[PATH_CAP];        /* denoised PNG written by the worker */
+    char out[PATH_CAP];        /* denoised PNG, written by the host on DONE */
     char out_protected[PATH_CAP];
 
-    int id;                    /* worker job id, 0 when idle */
-    int res_id;                /* id of the denoise whose result is cached in the worker */
+    int id;                    /* denoiser job id, 0 when idle */
+    int src_key;               /* stable identity for the SR cache (path+file stamp) */
     job_status status;
     bool cancel_sent;
     float progress;
@@ -88,6 +87,9 @@ typedef struct job {
     bool has_result;
 
     img_pixels orig;           /* full-res straight RGBA */
+    unsigned char *icc;        /* source ICC profile (img_free_icc) */
+    size_t icc_size;
+    eng_image res;             /* full-res denoised RGB (eng_image_free) */
     bool has_alpha;
     cui_texture orig_tex;
     int disp_w, disp_h;
@@ -139,15 +141,15 @@ typedef struct app_state {
     bool peek_mask;            /* M held */
     bool space_down;
 
-    /* worker */
-    bool worker_up;
+    /* denoiser */
+    bool engine_ready;         /* a good READY arrived from the engine thread */
     bool start_wanted;
     bool start_shown;
     char device[160];
-    char worker_error[512];
+    char engine_error[512];
     int next_id;
-    bool booting;              /* init or model download in progress */
-    double boot_deadline;      /* when a silent worker counts as failed */
+    bool booting;              /* engine bring-up or model download in progress */
+    double boot_deadline;      /* when a silent engine counts as failed */
     float boot_value;
     char boot_stage[160];
 
@@ -183,12 +185,11 @@ typedef struct app_state {
     bool settings_dirty;
     double settings_dirty_at;
 
-    rt_info rt;                /* AI runtime state, polled every frame */
     char **pending;            /* paths from the command line, added on the first frame */
     int pending_n;
 
     upd_info upd;
-    bool bench;                /* ANIME_DENOISE_BENCH=1: no worker, no network */
+    bool bench;                /* ANIME_DENOISE_BENCH=1: no engine, no network */
     char upd_manifest[512];
     double upd_checked_at;
 } app_state;
@@ -206,7 +207,7 @@ extern const preset_def PRESETS[3];
 #define PRESET_CUSTOM 3
 #define DEFAULT_PRESET 1
 
-/* Frame entry points. app_frame() polls the worker, handles input and draws;
+/* Frame entry points. app_frame() polls the denoiser, handles input and draws;
  * call it once per cui_app_frame(). */
 void app_init(app_state *st);
 void app_frame(cui_app *app, cui_ctx *ui, app_state *st);
@@ -222,7 +223,7 @@ void app_test_select(app_state *st, int index);
 /* Fills job `index` with a synthetic "done" result so the result UI can be
  * benchmarked without running the model. */
 void app_test_fake_result(app_state *st, int index);
-/* Queue an image without the worker (returns false when it cannot be decoded). */
+/* Queue an image without the engine (returns false when it cannot be decoded). */
 bool app_test_add_image(app_state *st, const char *path);
 void app_test_enqueue(app_state *st, const char *path);
 int app_test_load_pending(void);
@@ -241,7 +242,7 @@ bool path_exists(const char *utf8);
 bool file_copy(const char *from, const char *to);
 double now_seconds(void);
 bool job_running(const app_state *st);
-void worker_submit_next(app_state *st);
+void engine_submit_next(app_state *st);
 void enqueue_path(app_state *st, const char *path);
 void pump_load_queue(app_state *st);
 
@@ -273,7 +274,6 @@ void ui_strip(cui_ctx *ui, app_state *st);
 void ui_status(cui_ctx *ui, app_state *st, job *j);
 void ui_stage_toolbar(cui_ctx *ui, app_state *st, job *j);
 void draw_stage_area(cui_ctx *ui, app_state *st, float height);
-void ui_runtime_panel(cui_ctx *ui, app_state *st, float height);
 void ui_dialogs(cui_ctx *ui, app_state *st);
 void stage_handle_input(app_state *st, job *j);
 void stage_fit(job *j, cui_rect r);

@@ -18,6 +18,7 @@
 #define LOADER_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "img.h"
 
@@ -35,6 +36,8 @@ typedef struct loader_result {
     img_pixels thumb;          /* LOADER_THUMB_SIDE^2 centre crop for the tile strip */
     bool   has_alpha;
     int    src_w, src_h;       /* original size, valid even after full is released */
+    unsigned char *icc;        /* source ICC profile, owned (img_free_icc); NULL when absent */
+    size_t icc_size;
 } loader_result;
 
 /* Starts the decode thread (also bringing img_init() up if nobody has). */

@@ -29,7 +29,3 @@ run = "uv run --with fonttools python tools/gen_assets.py --check"
 [tasks.dist]
 description = "Build the Inno Setup installer into dist/"
 run = "pwsh -NoProfile -File installer/build_installer.ps1 -Version ${VERSION:-1.1.0}"
-
-[tasks.worker-smoke]
-description = "Run the Python worker protocol smoke test"
-run = "uv run --project _dl/pyenv python tests/smoke_worker.py"

@@ -81,7 +81,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#StageDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#StageDir}\worker\*"; DestDir: "{app}\worker"; Flags: ignoreversion recursesubdirs createallsubdirs
+#if FileExists(StageDirFull + "\anime-denoise.exe")
+Source: "{#StageDir}\anime-denoise.exe"; DestDir: "{app}"; Flags: ignoreversion
+#endif
+Source: "{#StageDir}\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 #if FileExists(StageDirFull + "\README.md")
 Source: "{#StageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion

@@ -46,7 +46,7 @@
 #define BRUSH_KEY_MAX        300.0f
 
 /* The stage measures in image pixels, the space the mask, the edge map, the
- * brush and the worker all use. Above DISPLAY_MAX the picture we draw is only
+ * brush and the engine all use. Above DISPLAY_MAX the picture we draw is only
  * a downscaled texture, so its size is NOT that space: measuring the brush,
  * the lasso and the view in display pixels put a stroke's mask pixels a factor
  * (mask/display) away from the cursor for every large image. */
@@ -655,13 +655,16 @@ static void stage_paint(cui_ctx *ui, cui_rect r, void *user) {
     cui_pop_clip(ui);
 }
 
-void ui_runtime_panel(cui_ctx *ui, app_state *st, float height) {
+/* Same slot the runtime installer occupied: shown only before the engine is
+ * ready and while there is nothing else to look at. Boot takes a second or
+ * two, so most users only ever see the spinner flash past. */
+static void ui_engine_panel(cui_ctx *ui, app_state *st, float height) {
     float h = height < 400.0f ? height : 400.0f;
     cui_row(ui, .width = CUI_FILL, .height = CUI_PX(height), .align = CUI_ALIGN_CENTER,
             .justify = CUI_JUSTIFY_CENTER) {
         cui_card_opts co;
         memset(&co, 0, sizeof co);
-        co.id = "runtime_card";
+        co.id = "engine_card";
         co.width = CUI_PX(760);
         co.height = CUI_PX(h);
         co.pad = UI_PAD;
@@ -669,45 +672,28 @@ void ui_runtime_panel(cui_ctx *ui, app_state *st, float height) {
         co.align = CUI_ALIGN_CENTER;
         co.dir = CUI_COLUMN;
         cui_card_begin(ui, &co);
-        cui_icon(ui, ICON_HARD_DRIVE, UI_ICON_LG, CUI_COLOR_ACCENT);
-        cui_text(ui, "首次使用：安装 AI 运行环境", .font = CUI_FONT_DISPLAY, .size = UI_FS_BRAND);
-        cui_text(ui, "去噪需要 PyTorch 与模型权重，安装包本身只有几 MB，这里按需下载"
-                     "（约 2 GB，只需一次）。",
-                 .size = UI_FS_BODY, .color = CUI_COLOR_TEXT_SECONDARY, .align = CUI_TEXT_CENTER);
-        cui_text(ui, st->rt.device_note, .size = UI_FS_BODY, .color = CUI_COLOR_TEXT_MUTED);
-
-        if (st->rt.state == RT_INSTALLING) {
-            char pct[48];
-            snprintf(pct, sizeof pct, "%s  %d%%", st->rt.stage, (int)(st->rt.progress * 100.0f + 0.5f));
-            cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
+        cui_icon(ui, CUI_ICON_SPARKLES, UI_ICON_LG, CUI_COLOR_ACCENT);
+        if (st->booting || !st->engine_error[0]) {
+            cui_text(ui, "正在启动推理引擎", .font = CUI_FONT_DISPLAY, .size = UI_FS_BRAND);
+            cui_text(ui, st->boot_stage[0] ? st->boot_stage : "加载中...",
+                     .size = UI_FS_BODY, .color = CUI_COLOR_TEXT_SECONDARY,
+                     .align = CUI_TEXT_CENTER);
+            cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER,
+                    .justify = CUI_JUSTIFY_CENTER) {
                 cui_spinner(ui, UI_ICON_SM);
-                cui_text(ui, pct, .size = UI_FS_BODY);
-            }
-            cui_progress(ui, st->rt.progress, .width = CUI_FILL, .height = 6, .tone = CUI_TONE_ACCENT);
-            if (st->rt.log_tail[0]) {
-                cui_scroll(ui, .id = "rt_log", .height = CUI_PX(96), .width = CUI_FILL) {
-                    cui_code(ui, st->rt.log_tail);
-                }
-            }
-            if (cui_button(ui, "取消安装", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM)) {
-                rt_cancel();
-            }
-        } else if (st->rt.state == RT_FAILED) {
-            cui_text(ui, st->rt.error, .size = UI_FS_BODY, .color = CUI_COLOR_DANGER);
-            if (st->rt.log_tail[0]) {
-                cui_scroll(ui, .id = "rt_log", .height = CUI_PX(120), .width = CUI_FILL) {
-                    cui_code(ui, st->rt.log_tail);
-                }
-            }
-            if (cui_button(ui, "重试安装", .variant = CUI_BUTTON_PRIMARY, .icon = CUI_ICON_DOWNLOAD)) {
-                rt_install();
+                cui_text(ui, "首次会编译推理会话，之后即开即用。",
+                         .size = UI_FS_BODY, .color = CUI_COLOR_TEXT_MUTED);
             }
         } else {
-            if (cui_button(ui, "开始安装", .variant = CUI_BUTTON_PRIMARY, .icon = CUI_ICON_DOWNLOAD)) {
-                rt_install();
+            cui_text(ui, "推理引擎未就绪", .font = CUI_FONT_DISPLAY, .size = UI_FS_BRAND);
+            if (st->engine_error[0]) {
+                cui_text(ui, st->engine_error, .size = UI_FS_BODY,
+                         .color = CUI_COLOR_DANGER, .align = CUI_TEXT_CENTER);
             }
-            cui_text(ui, "安装位置：" APP_ID " 的数据目录，可随时在设置里查看。",
-                     .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_MUTED);
+            if (cui_button(ui, "重试", .variant = CUI_BUTTON_PRIMARY,
+                           .icon = CUI_ICON_REFRESH_CW)) {
+                st->want_restart = true;
+            }
         }
         cui_card_end(ui);
     }
@@ -715,15 +701,14 @@ void ui_runtime_panel(cui_ctx *ui, app_state *st, float height) {
 
 void draw_stage_area(cui_ctx *ui, app_state *st, float height) {
     job *j = job_selected(st);
-    bool panel = !st->bench && (st->rt.state == RT_INSTALLING || st->rt.state == RT_FAILED ||
-                 (st->rt.state == RT_MISSING && !st->worker_up));
-    /* Nothing on the stage can zoom this frame (the installer panel or the drop
+    bool panel = !st->bench && !st->engine_ready && st->count == 0;
+    /* Nothing on the stage can zoom this frame (the engine panel or the drop
      * zone is showing), so the wheel's notches are dropped here rather than
      * landing on the next picture the user opens. */
     if (panel || !j || !st->stage_valid) (void)chrome_take_wheel();
 
     if (panel) {
-        ui_runtime_panel(ui, st, height);
+        ui_engine_panel(ui, st, height);
         return;
     }
     if (!j) {

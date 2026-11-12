@@ -4,7 +4,7 @@
  *   settings.json     user preferences (atomic write: tmp + MoveFileEx)
  *   logs\app.log      rotating log, 4 MiB x 3
  *   projects\         per-image sidecars (mask.png, meta.json)
- *   runtime\          Python venv + models installed by the first-run wizard
+ *   models\           user-downloaded .pth weights (CUGAN / APISR), optional
  *   updates\          downloaded installer (update.bin + update.json)
  */
 #ifndef CONFIG_H
@@ -19,6 +19,7 @@ typedef struct app_settings {
     int preset;              /* 0 soft, 1 balanced, 2 strong, 3 custom */
     int down_pct;            /* 10..100 */
     float l0;                /* 0..0.005 */
+    int device;              /* 0 auto, 1 gpu, 2 cpu (eng_device) */
 
     /* brush */
     float brush_size;        /* 2..300 px */
@@ -36,7 +37,7 @@ typedef struct app_settings {
 
     /* paths (empty = default) */
     char output_dir[CFG_PATH_CAP];
-    char model_root[CFG_PATH_CAP];     /* runtime root override */
+    char model_root[CFG_PATH_CAP];     /* legacy dev override (unused by the native engine) */
     char last_open_dir[CFG_PATH_CAP];
 } app_settings;
 
@@ -49,7 +50,7 @@ void cfg_shutdown(void);
 
 const char *cfg_data_dir(void);       /* %LOCALAPPDATA%\AnimeDenoise */
 const char *cfg_log_dir(void);
-const char *cfg_runtime_dir(void);    /* <data>\runtime */
+const char *cfg_models_dir(void);    /* <data>\models */
 const char *cfg_default_out_dir(void);
 const char *cfg_exe_dir(void);        /* where AnimeDenoise.exe lives */
 

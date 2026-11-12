@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 
 project(anime_denoise
     VERSION 1.1.0
-    DESCRIPTION "Anime Denoise: native CUI front end, Python inference worker"
+    DESCRIPTION "Anime Denoise: native CUI app, ONNX Runtime inference"
     LANGUAGES C RC)
 
 set(CMAKE_C_STANDARD 11)
@@ -24,8 +24,7 @@ add_library(anime_core STATIC
     src/app.c
     src/ui_shell.c
     src/ui_stage.c
-    src/backend.c
-    src/backend_json.c
+    src/denoiser.c
     src/chrome.c
     src/config.c
     src/log.c
@@ -33,7 +32,6 @@ add_library(anime_core STATIC
     src/img_clip.c
     src/loader.c
     src/mask.c
-    src/runtime.c
     src/update.c
     src/update_io.c)
 
@@ -91,7 +89,7 @@ target_link_libraries(anime_core PUBLIC
     ole32 oleaut32 uuid windowscodecs bcrypt winhttp
     shell32 shlwapi advapi32 user32 gdi32 comctl32 dwmapi)
 
-target_link_libraries(AnimeDenoise PRIVATE anime_core)
+target_link_libraries(AnimeDenoise PRIVATE anime_core anime_engine)
 cui_app_target(AnimeDenoise)
 
 # Console front end (docs/cli-spec.md): shares the engine, the WIC image IO
@@ -121,13 +119,11 @@ if(MSVC)
     target_compile_options(anime-denoise PRIVATE $<$<CONFIG:Release>:/O2>)
 endif()
 
-# A runnable build directory: <exe dir>\assets\... and <exe dir>\worker\...
+# A runnable build directory: <exe dir>\assets\... (fonts + icons)
 add_custom_command(TARGET AnimeDenoise POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:AnimeDenoise>/assets"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/worker" "$<TARGET_FILE_DIR:AnimeDenoise>/worker"
-    COMMENT "Copying assets and worker next to the executable")
+    COMMENT "Copying assets next to the executable")
 
 # Native engine runtime: the ORT/DirectML DLLs load from <exe dir>\runtime\ and
 # the bundled model from <exe dir>\models\ (see src/engine/engine.c).

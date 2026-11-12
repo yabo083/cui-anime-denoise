@@ -9,8 +9,8 @@
     2. Locates ISCC.exe; exits with code 2 and installation instructions when
        Inno Setup 6 is not installed (nothing is installed automatically).
     3. Runs ..\build.ps1 (Release) unless -SkipBuild.
-    4. Stages AnimeDenoise.exe, worker\, assets\ and the optional docs into
-       dist\stage and verifies the required files are present.
+    4. Stages AnimeDenoise.exe, runtime\, models\, assets\ and the optional
+       docs into dist\stage and verifies the required files are present.
     5. Runs ISCC.exe with /DAppVersion=<version> and reports the setup size.
 
     Result: dist\AnimeDenoise-<version>-setup.exe
@@ -116,7 +116,12 @@ Write-Host "Staging $Version into dist\stage ..." -ForegroundColor Cyan
 New-StageDirectory -Path $stageDir
 
 Copy-Item -LiteralPath $exePath -Destination (Join-Path $stageDir 'AnimeDenoise.exe')
-Copy-Item -LiteralPath (Join-Path $root 'worker') -Destination (Join-Path $stageDir 'worker') -Recurse
+$cliPath = Join-Path $buildDir 'anime-denoise.exe'
+if (Test-Path -LiteralPath $cliPath -PathType Leaf) {
+    Copy-Item -LiteralPath $cliPath -Destination (Join-Path $stageDir 'anime-denoise.exe')
+}
+Copy-Item -LiteralPath (Join-Path $buildDir 'runtime') -Destination (Join-Path $stageDir 'runtime') -Recurse
+Copy-Item -LiteralPath (Join-Path $buildDir 'models') -Destination (Join-Path $stageDir 'models') -Recurse
 Copy-Item -LiteralPath (Join-Path $root 'assets') -Destination (Join-Path $stageDir 'assets') -Recurse
 
 foreach ($doc in @('README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.txt')) {
@@ -130,7 +135,9 @@ foreach ($doc in @('README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.txt')) {
 
 $required = @(
     (Join-Path $stageDir 'AnimeDenoise.exe'),
-    (Join-Path $stageDir 'worker\worker.py'),
+    (Join-Path $stageDir 'runtime\onnxruntime.dll'),
+    (Join-Path $stageDir 'runtime\DirectML.dll'),
+    (Join-Path $stageDir 'models\esrgan_anime6b_x4.onnx'),
     (Join-Path $stageDir 'assets')
 )
 $missing = @($required | Where-Object { -not (Test-Path -LiteralPath $_) })

@@ -1,16 +1,20 @@
 /* Anime Denoise -- native front end for the GPT anime de-screening model.
  *
- * CUI immediate-mode UI in C, inference in a Python sidecar (backend.h).
+ * CUI immediate-mode UI in C, inference on the in-process engine thread
+ * (denoiser.h): the ONNX Runtime + DirectML engine runs behind one
+ * below-normal-priority thread and answers through an event ring.
  *
  * Threading / blocking rules:
- *   - worker events are drained at the top of every frame, before anything is
- *     drawn, so a frame always shows post-event state;
- *   - the two blocking calls (starting the worker, the file dialog) are deferred
- *     to the end of a frame through intent flags, so the window has already
- *     painted a "working on it" frame when they block;
- *   - the protection mask is composited by the worker (it owns the full-res
- *     denoised pixels); the app only uploads the mask on stroke commit and
- *     shows the preview it gets back.
+ *   - denoiser events are drained at the top of every frame, before anything
+ *     is drawn, so a frame always shows post-event state;
+ *   - the potentially blocking calls (engine bring-up, the file dialog) are
+ *     deferred to the end of a frame through intent flags, so the window has
+ *     already painted a "working on it" frame when they run;
+ *   - the protection mask is composited on the host: the full-res denoised
+ *     pixels live in the job (eng_image), mask_feather produces the weight
+ *     map and img_composite_masked applies the worker's exact blend;
+ *   - writing the output PNG is a host job: result RGB + source alpha + the
+ *     ICC profile the loader lifted with img_decode_file_ex.
  *
  * Layout
  *   topbar 56
@@ -47,7 +51,6 @@
 #include "icons.h"
 #include "loader.h"
 #include "mask.h"
-#include "runtime.h"
 #include "update.h"
 
 #ifndef APP_VERSION
@@ -213,10 +216,10 @@ job *job_selected(app_state *st) {
     return &st->jobs[st->selected];
 }
 
-static int job_find(const app_state *st, int worker_id) {
-    if (worker_id == 0) return -1;
+static int job_find(const app_state *st, int dn_id) {
+    if (dn_id == 0) return -1;
     for (int i = 0; i < st->count; i++)
-        if (st->jobs[i].id == worker_id) return i;
+        if (st->jobs[i].id == dn_id) return i;
     return -1;
 }
 
@@ -258,11 +261,44 @@ static void job_free(cui_ctx *ui, job *j) {
     job_drop_textures(ui, j);
     if (j->thumb_tex) { cui_image_destroy(ui, j->thumb_tex); j->thumb_tex = 0; }
     img_free(&j->orig);
+    eng_image_free(&j->res);
+    img_free_icc(j->icc);
     mask_free(&j->m);
     mask_edges_free(&j->edges);
     if (j->hist) { mask_hist_free(j->hist); j->hist = NULL; }
     /* the rest of the struct is rebuilt by the next job that lands here */
     memset(j, 0, sizeof *j);
+}
+
+/* Stable identity for the denoiser's SR cache: the worker keyed it on the
+ * file's sha1, so an edited source must not reuse the cached upscale. Path +
+ * file size + write time gives the same "same bytes" test without reading
+ * the file (the loader already decoded it, so the stamp is free). */
+static int job_src_key(const char *path) {
+    wchar_t w[PATH_CAP * 2];
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    unsigned h = 2166136261u;
+    utf8_to_wide(path, w, PATH_CAP * 2);
+    if (!GetFileAttributesExW(w, GetFileExInfoStandard, &a)) {
+        a.nFileSizeLow = a.nFileSizeHigh = 0;
+        a.ftLastWriteTime.dwLowDateTime = a.ftLastWriteTime.dwHighDateTime = 0;
+    }
+    for (const unsigned char *p = (const unsigned char *)path; *p; p++) {
+        h ^= *p;
+        h *= 16777619u;
+    }
+    for (int i = 0; i < 4; i++) {
+        unsigned v = i == 0 ? a.nFileSizeLow
+                   : i == 1 ? a.nFileSizeHigh
+                   : i == 2 ? a.ftLastWriteTime.dwLowDateTime
+                            : a.ftLastWriteTime.dwHighDateTime;
+        for (int b = 0; b < 4; b++) {
+            h ^= (unsigned char)(v & 0xFF);
+            h *= 16777619u;
+            v >>= 8;
+        }
+    }
+    return (int)(h & 0x7FFFFFFFu);
 }
 
 static void out_paths(app_state *st, job *j) {
@@ -333,6 +369,11 @@ static job *job_add_decoded(app_state *st, loader_result *r) {
     /* ownership moves to the job: the caller still runs img_free() on every
      * result field, so clear this one or the pixels are freed twice */
     r->full = (img_pixels){ 0 };
+    j->icc = r->icc;
+    j->icc_size = r->icc_size;
+    r->icc = NULL;
+    r->icc_size = 0;
+    j->src_key = job_src_key(r->path);
     j->has_alpha = r->has_alpha;
     j->status = JOB_QUEUED;
     j->down_pct = st->down_pct;
@@ -363,7 +404,9 @@ static job *job_add(cui_ctx *ui, app_state *st, const char *path) {
     if (st->count >= MAX_JOBS) { toast(st, "最多同时处理 64 张图"); return NULL; }
 
     img_pixels px = {0};
-    if (!img_decode_file(path, &px)) {
+    unsigned char *icc = NULL;
+    size_t icc_size = 0;
+    if (!img_decode_file_ex(path, &px, &icc, &icc_size)) {
         char msg[420];
         snprintf(msg, sizeof msg, "无法读取这张图片：%s", path_basename(path));
         toast(st, msg);
@@ -378,6 +421,9 @@ static job *job_add(cui_ctx *ui, app_state *st, const char *path) {
     path_stem(j->stem, sizeof j->stem, j->name);
 
     j->orig = px;
+    j->icc = icc;
+    j->icc_size = icc_size;
+    j->src_key = job_src_key(path);
     j->has_alpha = img_has_alpha(&px);
     j->status = JOB_QUEUED;
     j->down_pct = st->down_pct;
@@ -426,7 +472,7 @@ void pump_load_queue(app_state *st) {
     /* one finished decode per frame keeps texture uploads bounded */
     if (loader_pop(&r)) {
         if (r.ok) {
-            if (job_add_decoded(st, &r)) worker_submit_next(st);
+            if (job_add_decoded(st, &r)) engine_submit_next(st);
         } else {
             char msg[420];
             snprintf(msg, sizeof msg, "无法读取 %s：%s", path_basename(r.path), r.error);
@@ -436,6 +482,7 @@ void pump_load_queue(app_state *st) {
         img_free(&r.full);
         img_free(&r.display);
         img_free(&r.thumb);
+        img_free_icc(r.icc);
     }
     if (loader_pending() > 0) cui_request_redraw(st->ui);
 }
@@ -464,85 +511,48 @@ void job_clear_finished(cui_ctx *ui, app_state *st) {
 }
 
 /* ------------------------------------------------------------------------ */
-/* Worker                                                                   */
+/* Denoiser                                                                 */
 /* ------------------------------------------------------------------------ */
 
-static void device_refresh(app_state *st) {
-    const char *gpu = wb_gpu();
-    const char *dev = wb_device();
-    if (gpu && *gpu) {
-        char upper[32];
-        size_t k = 0;
-        for (const char *p = dev; p && *p && k + 1 < sizeof upper; p++)
-            upper[k++] = (char)toupper((unsigned char)*p);
-        upper[k] = 0;
-        snprintf(st->device, sizeof st->device, "%s (%s)", gpu, upper);
-        return;
-    }
-    str_copy(st->device, sizeof st->device, st->worker_up ? "worker ready" : "worker offline");
+static eng_device device_pref(const app_state *st) {
+    return st->set.device == 1 ? ENG_DEV_GPU
+         : st->set.device == 2 ? ENG_DEV_CPU
+                               : ENG_DEV_AUTO;
 }
 
-static void worker_start_now(app_state *st) {
+static void engine_start_now(app_state *st) {
     if (st->bench) return;
-    const char *python = NULL;
-    char py[PATH_CAP];
-    const char *root = st->set.model_root[0] ? st->set.model_root : rt_root();
-    if (st->set.model_root[0]) {
-        /* a dev/portable root may be a runtime (python\python.exe) or an
-         * ordinary venv (.venv\Scripts\python.exe) */
-        snprintf(py, sizeof py, "%s\\python\\python.exe", root);
-        if (path_exists(py)) python = py;
-        else {
-            snprintf(py, sizeof py, "%s\\.venv\\Scripts\\python.exe", root);
-            if (path_exists(py)) python = py;
-        }
-    } else if (rt_ready()) {
-        python = rt_python();
-    }
 
-    if (!python) {
-        str_copy(st->worker_error, sizeof st->worker_error, "AI 运行环境尚未安装");
-        str_copy(st->device, sizeof st->device, "环境未安装");
-        st->boot_stage[0] = 0;
-        log_warn("runtime missing under %s", root);
-        return;
-    }
-
-    /* the worker imports denoise.py from the app's own assets */
-    char denoise_root[PATH_CAP];
-    path_join(denoise_root, sizeof denoise_root, cfg_exe_dir(), "assets\\python");
-    wchar_t wroot[PATH_CAP * 2];
-    utf8_to_wide(denoise_root, wroot, PATH_CAP * 2);
-    SetEnvironmentVariableW(L"ANIME_DENOISE_ROOT", wroot);
-
-    char worker_py[PATH_CAP];
-    path_join(worker_py, sizeof worker_py, cfg_exe_dir(), "worker\\worker.py");
-    char models[PATH_CAP];
-    path_join(models, sizeof models, root, "models");
-
-    /* asynchronous: the process is spawned here, readiness arrives as an event.
-     * Nothing on the UI thread waits for torch any more (docs/design.md §2). */
+    /* asynchronous: the engine thread is spawned here and readiness arrives
+     * as DN_EV_READY, so nothing on the UI thread waits for ORT (§2). A
+     * restart joins the old thread first -- bounded by one engine tile. */
     st->booting = true;
     st->boot_value = 0.0f;
-    str_copy(st->boot_stage, sizeof st->boot_stage, "启动推理进程");
-    st->boot_deadline = now_seconds() + 180.0;
-    st->worker_up = wb_start_async(python, worker_py, root, models);
-    if (st->worker_up) {
-        str_copy(st->device, sizeof st->device, "正在启动…");
+    str_copy(st->boot_stage, sizeof st->boot_stage, "加载推理引擎");
+    st->boot_deadline = now_seconds() + 60.0;
+    st->engine_error[0] = 0;
+    if (dn_state_get() == DN_STATE_IDLE) {
+        if (!dn_start(device_pref(st))) {
+            st->booting = false;
+            const char *err = dn_last_error();
+            str_copy(st->engine_error, sizeof st->engine_error,
+                     (err && *err) ? err : "无法启动推理引擎。");
+            str_copy(st->device, sizeof st->device, "模型未就绪");
+            log_error("denoiser start failed: %s", st->engine_error);
+            return;
+        }
     } else {
-        st->booting = false;
-        const char *err = wb_last_error();
-        str_copy(st->worker_error, sizeof st->worker_error,
-                 (err && *err) ? err : "无法启动推理进程。");
-        str_copy(st->device, sizeof st->device, "模型未就绪");
-        log_error("worker start failed: %s", st->worker_error);
+        dn_restart(device_pref(st));
     }
+    str_copy(st->device, sizeof st->device, "正在启动…");
 }
 
-/* Sends the first queued job when nothing is running. */
-void worker_submit_next(app_state *st) {
+/* Sends the first queued job when nothing is running. The job's pixels are
+ * already in memory (the loader decoded them), so the denoiser gets RGBA,
+ * not a path -- nothing re-reads the source file. */
+void engine_submit_next(app_state *st) {
     if (st->bench) return;
-    if (!st->worker_up || job_running(st)) return;
+    if (!st->engine_ready || job_running(st)) return;
     for (int i = 0; i < st->count; i++) {
         job *j = &st->jobs[i];
         if (j->status != JOB_QUEUED) continue;
@@ -553,82 +563,82 @@ void worker_submit_next(app_state *st) {
         j->cancel_sent = false;
         j->error[0] = 0;
         out_paths(st, j);
-        wb_push_denoise(j->id, j->path, j->down_pct, j->l0, j->out);
+        if (!dn_push_denoise(j->id, j->src_key, &j->orig, j->down_pct, j->l0)) {
+            j->status = JOB_ERROR;
+            j->id = 0;
+            str_copy(j->error, sizeof j->error, "无法提交去噪任务。");
+        }
         return;
     }
 }
 
-/* Uploads the feathered mask so the worker can blend it into the cached result. */
+/* The denoise result as RGBA: engine RGB plus the source alpha channel so
+ * a transparent PNG stays transparent. Returns NULL on failure. */
+static img_pixels *job_result_px(job *j, img_pixels *out) {
+    memset(out, 0, sizeof *out);
+    if (!j->has_result || !j->res.rgb) return NULL;
+    out->w = j->res.w;
+    out->h = j->res.h;
+    out->rgba = (uint8_t *)malloc((size_t)out->w * out->h * 4);
+    if (!out->rgba) { memset(out, 0, sizeof *out); return NULL; }
+    bool alpha = j->orig.rgba && j->orig.w == j->res.w && j->orig.h == j->res.h;
+    for (int i = 0, n = out->w * out->h; i < n; i++) {
+        memcpy(out->rgba + i * 4, j->res.rgb + i * 3, 3);
+        out->rgba[i * 4 + 3] = alpha ? j->orig.rgba[i * 4 + 3] : 255;
+    }
+    return out;
+}
+
+/* Composites the feathered mask into the cached result, on the host.
+ * The worker did this on its side because it owned the pixels; now the job
+ * owns them (j->res), so the blend runs here and only the preview goes to
+ * the GPU. Returns the composited full-res RGBA (NULL on failure). */
+static img_pixels *job_composite_px(job *j, img_pixels *out) {
+    if (!j->mask_active) return job_result_px(j, out);
+    memset(out, 0, sizeof *out);
+    if (!j->has_result || !j->res.rgb) return NULL;
+    uint8_t *w = NULL;
+    if (!mask_feather(&j->m, j->feather_px, &w)) return NULL;
+    bool ok = j->orig.w == j->res.w && j->orig.h == j->res.h &&
+              img_composite_masked(out, &j->orig, j->res.rgb, w, j->res.w, j->res.h);
+    free(w);
+    return ok ? out : NULL;
+}
+
+static void job_res_texture(cui_ctx *ui, job *j, const img_pixels *px) {
+    img_pixels prev = {0};
+    if (!img_thumbnail(px, DISPLAY_MAX, &prev)) return;
+    if (j->res_tex) cui_image_destroy(ui, j->res_tex);
+    j->res_tex = cui_image_create(ui, prev.w, prev.h, prev.rgba);
+    j->res_w = j->res_tex ? prev.w : 0;
+    j->res_h = j->res_tex ? prev.h : 0;
+    img_free(&prev);
+}
+
+/* The mask changed on a finished job: blend it locally, rewrite the
+ * protected PNG, refresh the preview. Synchronous because it is CPU work
+ * on memory the thread already owns -- a stroke commit costs a feather +
+ * a blend, no IPC. */
 void request_composite(app_state *st, job *j) {
-    if (!st->worker_up || !j->has_result || j->id != 0) return;
-    if (!j->mask_active) {
-        /* nothing protected: the plain result is the answer */
-        if (j->out[0] && path_exists(j->out)) {
-            img_pixels px = {0};
-            if (img_decode_file(j->out, &px)) {
-                if (j->res_tex) cui_image_destroy(st->ui, j->res_tex);
-                img_pixels prev = {0};
-                if (img_thumbnail(&px, DISPLAY_MAX, &prev)) {
-                    j->res_tex = cui_image_create(st->ui, prev.w, prev.h, prev.rgba);
-                    j->res_w = prev.w;
-                    j->res_h = prev.h;
-                    img_free(&prev);
-                }
-                img_free(&px);
-            }
-        }
+    if (!j->has_result || j->id != 0 || !st->ui) return;
+
+    img_pixels px = {0};
+    if (!job_composite_px(j, &px)) {
+        toast(st, "合成保护区域失败");
         j->composite_dirty = false;
         return;
     }
-
-    /* grey mask -> RGBA PNG -> base64 */
-    img_pixels px;
-    px.w = j->m.w;
-    px.h = j->m.h;
-    px.rgba = (uint8_t *)malloc((size_t)px.w * px.h * 4);
-    if (!px.rgba) return;
-    for (int i = 0, n = px.w * px.h; i < n; i++) {
-        uint8_t v = j->m.px[i];
-        px.rgba[i * 4 + 0] = v;
-        px.rgba[i * 4 + 1] = v;
-        px.rgba[i * 4 + 2] = v;
-        px.rgba[i * 4 + 3] = 255;
+    const char *out = j->mask_active && j->out_protected[0]
+                      ? j->out_protected : j->out;
+    if (out[0]) {
+        if (!img_encode_png_icc(out, &px, j->icc, j->icc_size))
+            toast(st, "写入受保护结果失败");
     }
-    void *png = NULL;
-    size_t png_len = 0;
-    bool ok = img_encode_png_memory(&px, &png, &png_len);
-    {
-        int nz = 0;
-        for (int i = 0, n = px.w * px.h; i < n; i++) nz += j->m.px[i] > 0;
-        log_info("composite job %d: mask %dx%d, %d nonzero px, png %zu bytes, id=%d",
-                 j->res_id, j->m.w, j->m.h, nz, png_len, j->res_id);
-    }
+    job_res_texture(st->ui, j, &px);
     img_free(&px);
-    if (!ok) { free(png); return; }
-
-    static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    size_t b64_len = ((png_len + 2) / 3) * 4;
-    char *b64 = (char *)malloc(b64_len + 1);
-    if (b64) {
-        const unsigned char *s = (const unsigned char *)png;
-        size_t o = 0;
-        for (size_t i = 0; i < png_len; i += 3) {
-            unsigned v = (unsigned)s[i] << 16;
-            if (i + 1 < png_len) v |= (unsigned)s[i + 1] << 8;
-            if (i + 2 < png_len) v |= s[i + 2];
-            b64[o++] = tbl[(v >> 18) & 63];
-            b64[o++] = tbl[(v >> 12) & 63];
-            b64[o++] = (i + 1 < png_len) ? tbl[(v >> 6) & 63] : '=';
-            b64[o++] = (i + 2 < png_len) ? tbl[v & 63] : '=';
-        }
-        b64[o] = 0;
-        j->compositing = true;
-        j->composite_dirty = false;
-        /* the worker caches results by the denoise id, so composite must reuse it */
-        wb_push_composite(j->res_id, b64, j->out_protected);
-        free(b64);
-    }
-    free(png);
+    j->composite_dirty = false;
+    j->compositing = false;
+    log_info("composite job %d: mask %dx%d", j->id, j->m.w, j->m.h);
 }
 
 void rebuild_mask_texture(app_state *st, job *j) {
@@ -667,99 +677,68 @@ void rebuild_mask_texture(app_state *st, job *j) {
     free(rgba);
 }
 
-static void job_apply_result(cui_ctx *ui, job *j, const char *path, const char *b64,
-                             int w, int h, int ms, bool sr_cached) {
-    img_pixels px = {0};
-    if (b64 && *b64) {
-        size_t n = strlen(b64);
-        /* wb_decode_preview decodes base64 + PNG in one step */
-        unsigned char *rgba = NULL;
-        int pw = 0, ph = 0;
-        if (wb_decode_preview(b64, &rgba, &pw, &ph) && rgba) {
-            if (j->res_tex) cui_image_destroy(ui, j->res_tex);
-            j->res_tex = cui_image_create(ui, pw, ph, rgba);
-            j->res_w = j->res_tex ? pw : 0;
-            j->res_h = j->res_tex ? ph : 0;
-            wb_free_pixels(rgba);
-        }
-        (void)n;
-    }
-    if (!j->res_tex && path && *path) {
-        if (img_decode_file(path, &px)) {
-            img_pixels prev = {0};
-            if (img_thumbnail(&px, DISPLAY_MAX, &prev)) {
-                if (j->res_tex) cui_image_destroy(ui, j->res_tex);
-                j->res_tex = cui_image_create(ui, prev.w, prev.h, prev.rgba);
-                j->res_w = prev.w;
-                j->res_h = prev.h;
-                img_free(&prev);
-            }
-            img_free(&px);
-        }
-    }
+/* A DN_EV_DONE landed: take the pixels, write the PNG, build the preview.
+ * All host-side now -- the worker's "path" field is gone, so j->out (set at
+ * submit time by out_paths) is where the result is encoded, with the source
+ * alpha re-applied and the source ICC profile written into the PNG. */
+static void job_apply_done(cui_ctx *ui, app_state *st, job *j, dn_event *ev) {
+    j->res = ev->rgb;                  /* ownership moves to the job */
+    memset(&ev->rgb, 0, sizeof ev->rgb);
     j->has_result = true;
     j->res_down_pct = j->down_pct;
     j->res_l0 = j->l0;
-    j->ms = ms;
-    j->sr_cached = sr_cached;
-    (void)w;
-    (void)h;
+    j->ms = ev->ms;
+    j->sr_cached = ev->sr_cached;
+
+    img_pixels px = {0};
+    if (job_result_px(j, &px)) {
+        if (j->out[0] && !img_encode_png_icc(j->out, &px, j->icc, j->icc_size)) {
+            toast(st, "无法写入输出 PNG");
+            log_error("encode failed: %s", j->out);
+        }
+        job_res_texture(ui, j, &px);
+        img_free(&px);
+    }
+    j->status = JOB_DONE;
+    j->id = 0;
+    j->progress = 1.0f;
+    if (j->mask_active) {
+        j->composite_dirty = true;
+        j->composite_pending = true;
+    }
     char when[32];
-    fmt_ms(ms, when, sizeof when);
-    snprintf(j->note, sizeof j->note, "已完成 · %s%s", when, sr_cached ? " · 复用超分结果" : "");
+    fmt_ms(ev->ms, when, sizeof when);
+    snprintf(j->note, sizeof j->note, "已完成 · %s%s", when, ev->sr_cached ? " · 复用超分结果" : "");
+    log_info("done %s in %d ms%s", j->name, ev->ms, ev->sr_cached ? " (sr cached)" : "");
+    engine_submit_next(st);
 }
 
-static void worker_mark_dead(cui_ctx *ui, app_state *st) {
-    st->worker_up = false;
-    for (int i = 0; i < st->count; i++) {
-        job *j = &st->jobs[i];
-        if (j->status != JOB_RUNNING) continue;
-        j->status = JOB_ERROR;
-        str_copy(j->error, sizeof j->error, "处理过程中推理进程退出了。");
-        j->id = 0;
-    }
-    if (!st->worker_error[0]) {
-        const char *err = wb_last_error();
-        str_copy(st->worker_error, sizeof st->worker_error,
-                 (err && *err) ? err : "推理进程意外退出。");
-    }
-    str_copy(st->device, sizeof st->device, "推理进程已退出");
-    cui_request_redraw(ui);
-}
-
-/* Drains the worker queue. Runs before any drawing so the frame is consistent. */
-static void poll_worker(cui_ctx *ui, app_state *st) {
-    wb_event ev;
-    while (wb_poll(&ev)) {
+/* Drains the denoiser's event ring. Runs before any drawing so the frame is
+ * consistent. */
+static void poll_denoiser(cui_ctx *ui, app_state *st) {
+    dn_event ev;
+    while (dn_poll(&ev)) {
         switch (ev.type) {
-        case WB_EV_BOOT:
-            st->booting = true;
-            st->boot_value = ev.value;
-            str_copy(st->boot_stage, sizeof st->boot_stage, ev.message);
-            break;
-
-        case WB_EV_READY:
-            st->worker_up = true;
-            st->booting = false;
-            st->worker_error[0] = 0;
-            device_refresh(st);
-            if (!ev.model_ready) wb_models("download");
-            worker_submit_next(st);
-            break;
-
-        case WB_EV_MODELS: {
-            st->booting = false;
-            if (ev.model_ready) {
-                log_info("models ready at %s (%llu bytes)", ev.message, ev.bytes);
-                worker_submit_next(st);
+        case DN_EV_READY:
+            if (ev.ready_ok) {
+                st->engine_ready = true;
+                st->booting = false;
+                st->engine_error[0] = 0;
+                str_copy(st->device, sizeof st->device,
+                         ev.device[0] ? ev.device : "引擎已就绪");
+                if (ev.message[0]) log_info("engine note: %s", ev.message);
+                engine_submit_next(st);
             } else {
-                str_copy(st->worker_error, sizeof st->worker_error,
-                         "去噪模型下载失败，请检查网络后在设置里重试。");
+                st->engine_ready = false;
+                st->booting = false;
+                str_copy(st->engine_error, sizeof st->engine_error,
+                         ev.message[0] ? ev.message : "推理引擎启动失败。");
+                str_copy(st->device, sizeof st->device, "模型未就绪");
+                log_error("engine boot failed: %s", st->engine_error);
             }
             break;
-        }
 
-        case WB_EV_PROGRESS: {
+        case DN_EV_PROGRESS: {
             int i = job_find(st, ev.id);
             if (i >= 0) {
                 job *j = &st->jobs[i];
@@ -772,107 +751,54 @@ static void poll_worker(cui_ctx *ui, app_state *st) {
             break;
         }
 
-        case WB_EV_DONE: {
+        case DN_EV_DONE: {
             int i = job_find(st, ev.id);
-            if (i >= 0) {
-                job *j = &st->jobs[i];
-                str_copy(j->out, sizeof j->out, ev.path);
-                job_apply_result(ui, j, ev.path, ev.preview_b64, ev.w, ev.h, ev.ms, ev.sr_cached);
-                j->status = JOB_DONE;
-                j->res_id = j->id;
-                j->id = 0;
-                j->progress = 1.0f;
-                if (j->mask_active) {
-                    j->composite_dirty = true;
-                    j->composite_pending = true;
-                }
-                log_info("done %s in %d ms%s", j->name, ev.ms, ev.sr_cached ? " (sr cached)" : "");
-                worker_submit_next(st);
-            }
+            if (i >= 0) job_apply_done(ui, st, &st->jobs[i], &ev);
             break;
         }
 
-        case WB_EV_COMPOSITED: {
+        case DN_EV_ERROR: {
             int i = job_find(st, ev.id);
-            if (i < 0) {
-                for (int k = 0; k < st->count; k++)
-                    if (st->jobs[k].res_id == ev.id) i = k;
-            }
             if (i >= 0) {
-                job *j = &st->jobs[i];
-                j->compositing = false;
-                if (ev.path[0]) str_copy(j->out_protected, sizeof j->out_protected, ev.path);
-                if (ev.preview_b64) {
-                    unsigned char *rgba = NULL;
-                    int pw = 0, ph = 0;
-                    if (wb_decode_preview(ev.preview_b64, &rgba, &pw, &ph) && rgba) {
-                        if (j->res_tex) cui_image_destroy(ui, j->res_tex);
-                        j->res_tex = cui_image_create(ui, pw, ph, rgba);
-                        j->res_w = pw;
-                        j->res_h = ph;
-                        wb_free_pixels(rgba);
-                    }
-                }
-            }
-            break;
-        }
-
-        case WB_EV_ERROR: {
-            int i = job_find(st, ev.id);
-            if (i < 0) {
-                /* composite errors carry the denoise id, which no job holds now */
-                for (int k = 0; k < st->count; k++) {
-                    if (st->jobs[k].res_id == ev.id && st->jobs[k].compositing) i = k;
-                }
-            }
-            if (i >= 0 && st->jobs[i].compositing) {
-                job *j = &st->jobs[i];
-                j->compositing = false;
-                j->composite_dirty = true;
-                toast(st, ev.message[0] ? ev.message : "局部保护合成失败");
-                log_error("composite failed: %s", ev.message);
-            } else if (i >= 0) {
                 job *j = &st->jobs[i];
                 j->status = JOB_ERROR;
                 j->id = 0;
-                j->compositing = false;
                 str_copy(j->error, sizeof j->error, ev.message[0] ? ev.message : "推理失败。");
                 log_error("job %d failed: %s", i, j->error);
-                worker_submit_next(st);
+                engine_submit_next(st);
             } else if (ev.message[0]) {
-                str_copy(st->worker_error, sizeof st->worker_error, ev.message);
+                str_copy(st->engine_error, sizeof st->engine_error, ev.message);
                 st->booting = false;
-                st->worker_up = wb_alive();
+                st->engine_ready = dn_state_get() == DN_STATE_READY;
             }
             break;
         }
 
-        case WB_EV_CANCELLED: {
+        case DN_EV_CANCELLED: {
             int i = job_find(st, ev.id);
             if (i >= 0) {
                 job *j = &st->jobs[i];
                 j->status = JOB_CANCELLED;
                 j->id = 0;
                 j->progress = 0.0f;
-                worker_submit_next(st);
+                engine_submit_next(st);
             }
             break;
         }
 
-        case WB_EV_DEAD:
-            if (!wb_alive()) worker_mark_dead(ui, st);
+        case DN_EV_DL_DONE:
+            toast(st, "模型已就绪");
             break;
 
-        case WB_EV_BYE:
-            st->worker_up = false;
-            str_copy(st->device, sizeof st->device, "推理进程已退出");
+        case DN_EV_DL_ERROR:
+            if (ev.message[0]) toast(st, ev.message);
             break;
 
         default:
             break;
         }
-        bool heavy = ev.type != WB_EV_PROGRESS;
-        wb_event_free(&ev);
+        bool heavy = ev.type != DN_EV_PROGRESS;
+        dn_event_free(&ev);
         if (heavy) cui_request_redraw(ui);
     }
 }
@@ -898,7 +824,7 @@ static void handle_shortcuts(cui_ctx *ui, app_state *st) {
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_S)) st->want_save = true;
     if (cui_shortcut(ui, CUI_MOD_PRIMARY | CUI_MOD_SHIFT, CUI_KEY_S)) st->want_save_as = true;
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_ENTER)) {
-        if (j && j->status != JOB_RUNNING) { j->status = JOB_QUEUED; worker_submit_next(st); }
+        if (j && j->status != JOB_RUNNING) { j->status = JOB_QUEUED; engine_submit_next(st); }
     }
 
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_Z)) {
@@ -1061,7 +987,7 @@ static void handle_drops(cui_ctx *ui, app_state *st) {
             added++;
         }
     }
-    if (added) worker_submit_next(st);
+    if (added) engine_submit_next(st);
 }
 
 static void open_browse_dialog(cui_app *app, app_state *st) {
@@ -1080,18 +1006,18 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
     st->ui = ui;
     if (!fonts_done) { load_fonts(ui, st); fonts_done = true; }
 
-    poll_worker(ui, st);
+    poll_denoiser(ui, st);
 
-    /* a worker that never answers must not leave a spinner forever */
+    /* an engine that never answers must not leave a spinner forever */
     if (st->booting && st->boot_deadline > 0.0 && now_seconds() > st->boot_deadline) {
         st->booting = false;
         st->boot_deadline = 0.0;
-        st->worker_up = false;
-        str_copy(st->worker_error, sizeof st->worker_error,
-                 "推理进程启动超时。可以点“重试”，或检查日志里的 worker 输出。");
+        st->engine_ready = false;
+        str_copy(st->engine_error, sizeof st->engine_error,
+                 "推理引擎启动超时。可以点“重试”，或检查日志。");
         str_copy(st->device, sizeof st->device, "启动超时");
-        if (wb_state_get() != WB_STATE_IDLE) wb_kill();
-        log_error("worker start timed out");
+        dn_shutdown();
+        log_error("engine start timed out");
     }
 
     if (st->pending_n > 0) {
@@ -1103,7 +1029,7 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
         free(st->pending);
         st->pending = NULL;
         st->pending_n = 0;
-        if (added) worker_submit_next(st);
+        if (added) engine_submit_next(st);
     }
 
     handle_drops(ui, st);
@@ -1114,8 +1040,8 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
         if (st->start_shown) {
             st->start_wanted = false;
             st->start_shown = false;
-            worker_start_now(st);
-            worker_submit_next(st);
+            engine_start_now(st);
+            engine_submit_next(st);
         } else {
             st->start_shown = true;
             cui_request_redraw(ui);
@@ -1125,22 +1051,10 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
     settings_flush(st, false);
     pump_load_queue(st);
 
-    rt_get(&st->rt);
-    if (st->rt.state == RT_READY && !st->worker_up && !st->start_wanted && !st->start_shown &&
-        !st->worker_error[0]) {
-        /* the runtime appeared (install finished): bring the worker up */
-        st->start_wanted = true;
-    }
-    if (st->rt.state == RT_READY && st->worker_error[0] &&
-        strcmp(st->worker_error, "AI 运行环境尚未安装") == 0) {
-        st->worker_error[0] = 0;
-        st->start_wanted = true;
-    }
-
     upd_get(&st->upd);
     if (st->set.auto_check_updates && !st->bench) upd_check(false);
 
-    bool busy = job_running(st) || st->booting || st->rt.state == RT_INSTALLING;
+    bool busy = job_running(st) || st->booting;
     cui_request_wakeup(ui, busy ? 0.05f : 0.5f);
 
     job *j = job_selected(st);
@@ -1163,7 +1077,7 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
             ui_sidebar(ui, st);
             cui_separator(ui);
             cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = PANE_PAD, .gap = PANE_GAP) {
-                if (!st->bench && (st->worker_error[0] || st->booting)) {
+                if (!st->bench && (st->engine_error[0] || st->booting)) {
                     cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_CENTER, .pad = 11,
                             .radius = 12, .bg = CUI_COLOR_SURFACE_MUTED, .border = 1) {
                         if (st->booting) cui_spinner(ui, 16);
@@ -1174,8 +1088,8 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
                                 cui_text(ui, st->boot_stage[0] ? st->boot_stage : "加载中...",
                                          .size = 11, .color = CUI_COLOR_TEXT_SECONDARY, .nowrap = true);
                             } else {
-                                cui_text(ui, "推理进程未就绪", .font = CUI_FONT_MEDIUM, .size = 12.5f);
-                                cui_text(ui, st->worker_error, .size = 11, .nowrap = true,
+                                cui_text(ui, "推理引擎未就绪", .font = CUI_FONT_MEDIUM, .size = 12.5f);
+                                cui_text(ui, st->engine_error, .size = 11, .nowrap = true,
                                          .color = CUI_COLOR_TEXT_SECONDARY);
                             }
                         }
@@ -1191,7 +1105,7 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
                     ui_stage_toolbar(ui, st, j);
                 }
                 float used = PANE_PAD * 2 + (j ? HEAD_H + 34.0f : 0.0f) + STRIP_H + 26.0f + PANE_GAP * 4
-                             + (st->worker_error[0] || st->booting ? 62.0f : 0.0f);
+                             + (st->engine_error[0] || st->booting ? 62.0f : 0.0f);
                 float canvas = cui_viewport_size(ui).y - TOPBAR_H - used;
                 if (canvas < 160.0f) canvas = 160.0f;
                 draw_stage_area(ui, st, canvas);
@@ -1214,12 +1128,12 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
     if (st->want_clear) {
         st->want_clear = false;
         job_clear_finished(ui, st);
-        worker_submit_next(st);
+        engine_submit_next(st);
     }
     if (st->want_restart) {
         st->want_restart = false;
-        if (wb_alive()) wb_kill();
-        st->worker_error[0] = 0;
+        st->engine_error[0] = 0;
+        st->engine_ready = false;
         st->start_wanted = true;
         st->start_shown = false;
         cui_request_redraw(ui);
@@ -1262,7 +1176,6 @@ void app_init(app_state *st) {
     str_copy(st->device, sizeof st->device, "正在启动...");
 
     loader_init();
-    rt_init();
 
     const char *env = getenv("ANIME_DENOISE_UPDATE_URL");
     str_copy(st->upd_manifest, sizeof st->upd_manifest, env ? env : "");
@@ -1287,8 +1200,7 @@ void app_shutdown(cui_ctx *ui, app_state *st) {
     }
     settings_flush(st, true);
     loader_shutdown();
-    rt_shutdown();
-    wb_shutdown();
+    dn_shutdown();
     upd_shutdown();
     for (int i = 0; i < st->count; i++) job_free(ui, &st->jobs[i]);
     st->count = 0;

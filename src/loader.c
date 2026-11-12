@@ -54,6 +54,9 @@ static void result_release(loader_result *r) {
     img_free(&r->full);
     img_free(&r->display);
     img_free(&r->thumb);
+    img_free_icc(r->icc);
+    r->icc = NULL;
+    r->icc_size = 0;
 }
 
 /* Centre-crops in place so a 4:3 frame fills a square tile instead of
@@ -121,7 +124,9 @@ static void load_one(const char *path, int id, loader_result *r) {
     snprintf(r->path, sizeof r->path, "%s", path ? path : "");
 
     img_pixels px = {0};
-    if (!img_decode_file(r->path, &px)) {
+    /* _ex also lifts the ICC profile: saving the denoised PNG happens on the
+     * host now, and the colour profile has to travel with the pixels */
+    if (!img_decode_file_ex(r->path, &px, &r->icc, &r->icc_size)) {
         snprintf(r->error, sizeof r->error, "无法解码该文件（格式不受支持或文件已损坏）");
         log_warn("loader: decode failed: %s", r->path);
         return;

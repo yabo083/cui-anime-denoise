@@ -75,7 +75,7 @@ void ui_topbar(cui_ctx *ui, app_state *st) {
         cui_icon(ui, CUI_ICON_SPARKLES, UI_ICON_LG, CUI_COLOR_ACCENT);
         cui_text(ui, APP_TITLE, .font = CUI_FONT_DISPLAY, .size = UI_FS_BRAND, .nowrap = true);
         cui_badge(ui, st->device, .size = CUI_SIZE_SM, .dot = true,
-                  .tone = st->worker_up ? CUI_TONE_SUCCESS : CUI_TONE_DANGER);
+                  .tone = st->engine_ready ? CUI_TONE_SUCCESS : CUI_TONE_DANGER);
         cui_spacer(ui);
 
         cui_row(ui, .height = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
@@ -145,7 +145,7 @@ void ui_job_header(cui_ctx *ui, app_state *st, job *j) {
             if (cui_button(ui, "取消", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
                            .icon = CUI_ICON_X)) {
                 j->cancel_sent = true;
-                wb_cancel(j->id);
+                dn_cancel(j->id);
             }
         }
         if (j->status == JOB_DONE) {
@@ -154,7 +154,7 @@ void ui_job_header(cui_ctx *ui, app_state *st, job *j) {
                 if (cui_button(ui, "用新参数重新去噪", .variant = CUI_BUTTON_PRIMARY, .size = CUI_SIZE_SM,
                                .icon = CUI_ICON_REFRESH_CW)) {
                     j->status = JOB_QUEUED;
-                    worker_submit_next(st);
+                    engine_submit_next(st);
                 }
             }
             if (cui_button(ui, "保存", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
@@ -229,7 +229,7 @@ static void ui_queue_row(cui_ctx *ui, app_state *st, int index) {
 
     if (cancel && j->status == JOB_RUNNING) {
         j->cancel_sent = true;
-        wb_cancel(j->id);
+        dn_cancel(j->id);
     } else if (clicked && !selected) {
         job_focus(st, index);
     }
@@ -492,8 +492,8 @@ void ui_status(cui_ctx *ui, app_state *st, job *j) {
             if (strcmp(phase, "upscale") == 0) phase = "超分辨率重建";
             else if (strcmp(phase, "smooth") == 0) phase = "L0 平滑";
             else if (strcmp(phase, "decode") == 0) phase = "解码";
-            else if (strcmp(phase, "encode") == 0) phase = "写入 PNG";
-            else if (strcmp(phase, "composite") == 0) phase = "合成保护区域";
+            else if (strcmp(phase, "prepare") == 0) phase = "准备模型";
+            else if (strcmp(phase, "compose") == 0) phase = "合成保护区域";
             char l0[16];
             fmt_l0(j->l0, l0, sizeof l0);
             snprintf(left, sizeof left, "%s · 预缩 %d%% · L0 %s", phase, j->down_pct, l0);
@@ -578,21 +578,37 @@ static void ui_settings_dialog(cui_ctx *ui, app_state *st) {
             }
 
             cui_separator(ui);
-            cui_text(ui, "AI 运行环境", .font = CUI_FONT_MEDIUM, .size = 12.5f);
-            cui_text(ui, cfg_runtime_dir(), .size = 11.5f, .nowrap = true, .color = CUI_COLOR_TEXT_SECONDARY);
+            cui_text(ui, "推理引擎", .font = CUI_FONT_MEDIUM, .size = 12.5f);
             cui_text(ui, st->device, .size = 11.5f, .color = CUI_COLOR_TEXT_MUTED);
-            if (st->worker_error[0]) {
-                cui_text(ui, st->worker_error, .size = 11.5f, .color = CUI_COLOR_DANGER);
+            if (st->engine_error[0]) {
+                cui_text(ui, st->engine_error, .size = 11.5f, .color = CUI_COLOR_DANGER);
+            }
+            cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                cui_text(ui, "设备", .size = 11.5f, .color = CUI_COLOR_TEXT_SECONDARY);
+                const char *dev_names[3] = { "自动", "GPU", "CPU" };
+                for (int d = 0; d < 3; d++) {
+                    bool on = st->set.device == d;
+                    if (cui_button(ui, dev_names[d],
+                                   .variant = on ? CUI_BUTTON_PRIMARY : CUI_BUTTON_OUTLINE,
+                                   .size = CUI_SIZE_SM)) {
+                        if (st->set.device != d) {
+                            st->set.device = d;
+                            cfg_save(&st->set);
+                            /* a device switch needs a clean engine: same
+                             * path as the retry button */
+                            st->want_restart = true;
+                        }
+                    }
+                }
             }
             cui_row(ui, .width = CUI_FILL, .gap = 8) {
-                if (cui_button(ui, "重新连接", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
+                if (cui_button(ui, "重启引擎", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
                                .icon = CUI_ICON_REFRESH_CW)) {
                     st->want_restart = true;
                 }
-                if (cui_button(ui, "重新下载模型", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
-                               .icon = ICON_DOWNLOAD_CLOUD)) {
-                    if (st->worker_up) { wb_models("download"); st->booting = true; }
-                    else toast(st, "推理进程还没启动");
+                if (cui_button(ui, "打开模型目录", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
+                               .icon = CUI_ICON_FOLDER_OPEN)) {
+                    cui_app_open_url(dn_models_dir());
                 }
                 if (cui_button(ui, "打开日志", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM,
                                .icon = CUI_ICON_FILE_TEXT)) {

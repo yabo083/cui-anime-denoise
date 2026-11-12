@@ -2,7 +2,7 @@
  *
  * Layout (see config.h):
  *   %LOCALAPPDATA%\AnimeDenoise\settings.json
- *   %LOCALAPPDATA%\AnimeDenoise\{logs,projects,runtime,updates}
+ *   %LOCALAPPDATA%\AnimeDenoise\{logs,projects,models,updates}
  *
  * The rotating log, crash reports and the diagnostics zip live in log.c; the
  * two halves of the module share config_priv.h. No third-party code: the JSON
@@ -31,7 +31,7 @@ bool cfg__ready;
 static wchar_t g_data_w[CFG_WCHAR_CAP];
 wchar_t cfg__log_dir_w[CFG_WCHAR_CAP];
 static wchar_t g_projects_w[CFG_WCHAR_CAP];
-static wchar_t g_runtime_w[CFG_WCHAR_CAP];
+static wchar_t g_models_w[CFG_WCHAR_CAP];
 static wchar_t g_updates_w[CFG_WCHAR_CAP];
 static wchar_t g_exe_w[CFG_WCHAR_CAP];
 static wchar_t g_out_w[CFG_WCHAR_CAP];
@@ -40,7 +40,7 @@ static wchar_t g_profile_w[CFG_WCHAR_CAP];
 
 char cfg__data_u8[CFG_PATH_CAP];
 static char g_log_u8[CFG_PATH_CAP];
-static char g_runtime_u8[CFG_PATH_CAP];
+static char g_models_u8[CFG_PATH_CAP];
 static char g_exe_u8[CFG_PATH_CAP];
 static char g_out_u8[CFG_PATH_CAP];
 static char g_profile_u8[CFG_PATH_CAP];
@@ -337,6 +337,7 @@ void cfg_defaults(app_settings *s)
     s->preset = 1;                 /* balanced */
     s->down_pct = 60;
     s->l0 = 0.001f;
+    s->device = 0;                 /* auto */
     s->brush_size = 14.0f;
     s->brush_mix = 90.0f;
     s->feather_px = 10.0f;
@@ -377,6 +378,7 @@ static void cfg_clamp(app_settings *s)
     clamp_int(&s->preset, 0, 3);
     clamp_int(&s->down_pct, 10, 100);
     clamp_float(&s->l0, 0.0f, 0.005f, 0.0f);
+    clamp_int(&s->device, 0, 2);
     clamp_float(&s->brush_size, 2.0f, 300.0f, 60.0f);
     clamp_float(&s->brush_mix, 0.0f, 100.0f, 50.0f);
     clamp_float(&s->feather_px, 0.0f, 150.0f, 8.0f);
@@ -506,6 +508,7 @@ static void settings_to_json(const app_settings *s, cfg__sb *b)
     cfg__sb_addf(b, "    \"preset\": %d,\n", s->preset);
     cfg__sb_addf(b, "    \"down_pct\": %d,\n", s->down_pct);
     cfg__sb_addf(b, "    \"l0\": %.6g,\n", (double)s->l0);
+    cfg__sb_addf(b, "    \"device\": %d,\n", s->device);
     cfg__sb_addf(b, "    \"brush_size\": %.6g,\n", (double)s->brush_size);
     cfg__sb_addf(b, "    \"brush_mix\": %.6g,\n", (double)s->brush_mix);
     cfg__sb_addf(b, "    \"feather_px\": %.6g,\n", (double)s->feather_px);
@@ -799,6 +802,8 @@ static void apply_setting(app_settings *s, const char *key, jtype t,
         j_int(t, num, &s->preset);
     } else if (strcmp(key, "down_pct") == 0) {
         j_int(t, num, &s->down_pct);
+    } else if (strcmp(key, "device") == 0) {
+        j_int(t, num, &s->device);
     } else if (strcmp(key, "l0") == 0) {
         j_float(t, num, &s->l0);
     } else if (strcmp(key, "brush_size") == 0) {
@@ -942,9 +947,9 @@ const char *cfg_log_dir(void)
     return g_log_u8;
 }
 
-const char *cfg_runtime_dir(void)
+const char *cfg_models_dir(void)
 {
-    return g_runtime_u8;
+    return g_models_u8;
 }
 
 const char *cfg_default_out_dir(void)
@@ -969,10 +974,10 @@ bool cfg_init(void)
     }
 
     memset(g_data_w, 0, sizeof g_data_w);
-    cfg__log_dir_w[0] = g_projects_w[0] = g_runtime_w[0] = 0;
+    cfg__log_dir_w[0] = g_projects_w[0] = g_models_w[0] = 0;
     g_updates_w[0] = g_exe_w[0] = g_out_w[0] = cfg__settings_path_w[0] = 0;
     g_profile_w[0] = 0;
-    cfg__data_u8[0] = g_log_u8[0] = g_runtime_u8[0] = 0;
+    cfg__data_u8[0] = g_log_u8[0] = g_models_u8[0] = 0;
     g_exe_u8[0] = g_out_u8[0] = g_profile_u8[0] = 0;
 
     n = GetModuleFileNameW(NULL, g_exe_w, CFG_WCHAR_CAP);
@@ -1010,11 +1015,11 @@ bool cfg_init(void)
     }
     cfg__path_join(cfg__log_dir_w, CFG_WCHAR_CAP, g_data_w, L"logs");
     cfg__path_join(g_projects_w, CFG_WCHAR_CAP, g_data_w, L"projects");
-    cfg__path_join(g_runtime_w, CFG_WCHAR_CAP, g_data_w, L"runtime");
+    cfg__path_join(g_models_w, CFG_WCHAR_CAP, g_data_w, L"models");
     cfg__path_join(g_updates_w, CFG_WCHAR_CAP, g_data_w, L"updates");
     ensure_dir_w(cfg__log_dir_w);
     ensure_dir_w(g_projects_w);
-    ensure_dir_w(g_runtime_w);
+    ensure_dir_w(g_models_w);
     ensure_dir_w(g_updates_w);
     cfg__path_join(cfg__settings_path_w, CFG_WCHAR_CAP, g_data_w, L"settings.json");
 
@@ -1047,7 +1052,7 @@ bool cfg_init(void)
 
     cfg__to_utf8(g_data_w, cfg__data_u8, CFG_PATH_CAP);
     cfg__to_utf8(cfg__log_dir_w, g_log_u8, CFG_PATH_CAP);
-    cfg__to_utf8(g_runtime_w, g_runtime_u8, CFG_PATH_CAP);
+    cfg__to_utf8(g_models_w, g_models_u8, CFG_PATH_CAP);
     cfg__to_utf8(g_exe_w, g_exe_u8, CFG_PATH_CAP);
     cfg__to_utf8(g_out_w, g_out_u8, CFG_PATH_CAP);
     cfg__to_utf8(g_profile_w, g_profile_u8, CFG_PATH_CAP);
@@ -1063,8 +1068,8 @@ void cfg_shutdown(void)
 {
     log_close();
     cfg__ready = false;
-    g_data_w[0] = cfg__log_dir_w[0] = g_projects_w[0] = g_runtime_w[0] = 0;
+    g_data_w[0] = cfg__log_dir_w[0] = g_projects_w[0] = g_models_w[0] = 0;
     g_updates_w[0] = g_exe_w[0] = g_out_w[0] = cfg__settings_path_w[0] = g_profile_w[0] = 0;
-    cfg__data_u8[0] = g_log_u8[0] = g_runtime_u8[0] = 0;
+    cfg__data_u8[0] = g_log_u8[0] = g_models_u8[0] = 0;
     g_exe_u8[0] = g_out_u8[0] = g_profile_u8[0] = 0;
 }

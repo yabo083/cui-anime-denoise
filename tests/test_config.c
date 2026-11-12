@@ -162,6 +162,7 @@ static bool settings_equal(const app_settings *a, const app_settings *b)
 
     return a->preset == b->preset &&
            a->down_pct == b->down_pct &&
+           a->device == b->device &&
            dl0 < 1e-6f && dbs < 1e-5f && dbm < 1e-5f && dfp < 1e-5f &&
            a->theme_mode == b->theme_mode &&
            a->view_mode == b->view_mode &&
@@ -181,13 +182,13 @@ static void test_paths(void)
 {
     wchar_t p[CFG_PATH_CAP];
     wchar_t data[CFG_PATH_CAP];
-    const char *dirs[] = { "logs", "projects", "runtime", "updates" };
+    const char *dirs[] = { "logs", "projects", "models", "updates" };
     size_t i;
 
     check(cfg_init(), "cfg_init succeeds");
     check(cfg_data_dir()[0] != 0, "cfg_data_dir is set");
     check(cfg_log_dir()[0] != 0, "cfg_log_dir is set");
-    check(cfg_runtime_dir()[0] != 0, "cfg_runtime_dir is set");
+    check(cfg_models_dir()[0] != 0, "cfg_models_dir is set");
     check(cfg_exe_dir()[0] != 0, "cfg_exe_dir is set");
     check(cfg_default_out_dir()[0] != 0, "cfg_default_out_dir is set");
 
@@ -219,6 +220,7 @@ static void test_roundtrip(void)
 
     a.preset = 3;
     a.down_pct = 42;
+    a.device = 2;
     a.l0 = 0.001953125f;
     a.brush_size = 33.25f;
     a.brush_mix = 87.0f;
