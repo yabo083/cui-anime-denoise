@@ -4,11 +4,11 @@
 
 ## 已交付并验证
 
-- 去噪端到端：拖入/粘贴/命令行 → worker → 对比视图 → 输出 PNG（2096×1586，6.1–6.8 s）。
-- 局部保护：笔刷/橡皮/磁力套索、羽化、撤销重做、合成产物 `_protected.png`（实测 8812 像素被还原到原图）。
+- 去噪端到端（原生路径）：拖入/粘贴/命令行 → denoiser 线程 → 对比视图 → 宿主写 PNG
+  （2096×1586 ≈ 16 s @esrgan60，保留 alpha 与 ICC，不透明图出 24bpp RGB PNG）。
+- 局部保护：笔刷/橡皮/磁力套索、羽化、撤销重做、宿主侧合成产物 `_protected.png`。
 - 多图队列、缩略图条、快捷键、浅/深色、中文字体（HarmonyOS Sans GB2312 子集）。
-- 首次运行装配：uv → Python 3.12 → torch cu130 → 模型下载，实测产出 3.1 GB runtime 并完成一次去噪。
-- 安装包：Inno Setup 每用户安装，4.57 MB；静默安装/卸载验证通过。
+- 安装包：Inno Setup 每用户安装；随包 `runtime/`（ORT+DirectML ≈35 MB）与 `models/`。
 - 自动更新：清单 + SHA-256 + 静默升级，本地 HTTP 实测通过/失败两条路径。
 - 日志轮转、崩溃报告、诊断包。
 - 基准工程 `lab/测试工程`：13 场景 × 1000 次 + 7 项交互断言，总体通过。
@@ -71,6 +71,27 @@
   链式 _l0 max 2–6、apisr max 3–4——与 `tmp/phase2/out` 驱动器裸输出
   逐位一致（CLI 无额外偏差，差异即引擎既有容差）。
 
+## 本轮完成（Phase 4a 进程内推理取代 Python 侧车）
+
+- `src/denoiser.c/.h`：一条 below-normal 线程独占 `eng *`；任务/事件有界环
+  （满时只丢最早 PROGRESS，终结事件不丢）；SR LRU 缓存（2 项，键 = src_key+down_pct）；
+  caller-owned cancel；60 s 空闲 `eng_release_sessions`；`dn_start/restart/shutdown`
+  全异步，`DN_EV_READY` 回 `ready_ok/device/using_gpu/note`。
+- `app.c` 重写推理路径：`dn_push_denoise` 直接递 RGBA 像素（去 IPC）；
+  DONE 事件接管 `eng_image` 所有权；宿主侧 `img_composite_masked` 合成保护、
+  `img_encode_png_icc` 写盘；`dn_cancel` 取消；READY 超时 60 s → FAILED+重试。
+- `ui_shell.c`/`ui_stage.c` 最小改动：健康徽标 → `engine_ready`；设置页引擎段
+  （设备 自动/GPU/CPU、重启引擎、模型目录）；runtime 安装面板 → 引擎状态面板。
+- `img.c`：`img_composite_masked`（与 worker.py 同公式）；全不透明 RGBA 写 24bpp
+  BGR PNG（对 Pillow RGB 输出平价）。
+- `config`：`runtime` 目录 → `models`；`settings.device` 0/1/2。
+- 构建/打包：CMake 移除 backend/runtime，GUI 链 `anime_engine`；安装包改分发
+  `runtime/`+`models/`；`mise.toml` 删 worker 冒烟任务；`worker/`、`assets/python/`、
+  `src/backend*`、`src/runtime*`、`docs/worker-protocol.md`、worker 测试全部删除。
+- 测试：`test_denoiser` 27 checks、`test_engine` 120、`test_config` 60、
+  `test_mask` 85 全过；`test_img` 合成用例过，clipboard CF_DIB/V5 偶发环境性失败。
+- E2E：GUI 启动→READY→收图→原生去噪→写盘 ≈16.3 s；无 Python 进程、无 worker.py。
+
 ## 进行中
 
 - **chrome**：`WM_SETCURSOR` 缺失导致缩放不可见；最大化 inset 未处理（§3）——ChromeFix 切片。
@@ -88,9 +109,11 @@
 
 ## 下一步
 
-1. **Phase 3**：引擎接入 UI —— `eng_*` 后台线程替代 Python worker 推理路径
-   （保留 worker 做合成或直接废弃，按 ADR-007 收口）；`runtime_dir`/`models_dir`
-   的安装与打包（35 MB ORT+DML 随包 vs 按需下载）需先决策。
-2. 视觉重设计：`docs/visual-design.md`（设计切片产出）→ 按 token 落到 `ui_shell.c`/`ui_stage.c`。
+1. **Phase 4b**：视觉重设计 —— `docs/fluent-redesign.md`（未入库草案）→ 按 token 落到
+   `ui_shell.c`/`ui_stage.c`；4a 刻意保持 UI 行为不变。
+2. `app.c` 已 1251 行，超 ≤800 交互类上限：按职责拆（任务生命周期/合成写盘
+   → `job*.c`；启动与设置意图留 `app.c`），拆完在 AGENTS.md 登记。
 3. chrome：`WM_SETCURSOR` 缩放光标 + 最大化 inset（§3）。
 4. 更新基准：启动期可交互（S2）、缩放光标区（W1）纳入自动断言。
+5. `test_img` clipboard CF_DIB/V5 偶发失败是环境性的（多跑几次会通过），
+   需要时把 clipboard 用例标为 flaky 并单独重试。

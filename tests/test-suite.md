@@ -19,11 +19,11 @@
 
 | ID | 前置 | 步骤 | 预期 | 机制 |
 |---|---|---|---|---|
-| S1 | 删除 runtime | 启动应用 | 显示「安装 AI 运行环境」面板，UI 可交互 | `rt_ready()==false` 分支 |
-| S2 | runtime 就绪、模型缺失 | 启动 | 顶部出现进度横幅，任务保持「排队中」，窗口不卡 | `wb_start_async` + BOOTING 状态机 |
-| S3 | worker 运行中 | 同时拖入 20 张图 | 单帧 UI 成本 < 1 ms（解码在加载线程） | `loader.c` 线程 + 每帧取一个结果 |
-| S4 | worker 运行中 | 拖动滑杆 2 秒 | `settings.json` 只在停止 500 ms 后写一次 | 设置去抖 |
-| S5 | 任意 | 关闭窗口 | 设置落盘、worker 退出、日志正常结束 | `app_shutdown` |
+| S1 | 重命名 `runtime/`（缺 ORT/DirectML DLL） | 启动应用 | 引擎面板显示「启动失败」+ 错误信息与重试按钮，UI 可交互 | `DN_EV_READY{ready_ok:0}` 分支 |
+| S2 | 引擎正常 | 启动 | 顶部出现启动横幅，任务保持「排队中」，窗口不卡；READY 后可跑 | `dn_start` + BOOT 状态机 |
+| S3 | 推理中 | 同时拖入 20 张图 | 单帧 UI 成本 < 1 ms（解码在加载线程） | `loader.c` 线程 + 每帧取一个结果 |
+| S4 | 推理中 | 拖动滑杆 2 秒 | `settings.json` 只在停止 500 ms 后写一次 | 设置去抖 |
+| S5 | 任意 | 关闭窗口 | 设置落盘、denoiser 线程退出、日志正常结束 | `dn_shutdown` |
 
 ## 窗口 chrome
 

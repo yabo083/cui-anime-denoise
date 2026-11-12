@@ -1,7 +1,8 @@
 # Anime Denoise
 
 原生 Windows 桌面版 GPT 二次元图去噪工具。界面用 [CUI](https://github.com/yappologistic/CUI)（即时模式 UI，C）绘制，
-推理交给一个 Python 侧车进程（`worker/worker.py`），去噪算法来自 [gpt-anime-denoise](https://github.com/CXP-2024/gpt-anime-denoise)（MIT）。
+推理由进程内的原生引擎完成（ONNX Runtime + DirectML/CPU，`src/engine/` + `src/denoiser.c`），
+去噪算法等价于 [gpt-anime-denoise](https://github.com/CXP-2024/gpt-anime-denoise)（MIT）的 `denoise.py`。
 
 所有处理都在本机完成，不上传任何图片。
 
@@ -14,7 +15,8 @@
 - **对比视图**：左右可拖动分隔线，`1/2/3` 切换对比 / 原图 / 结果，按住 `Z` 临时看原图，按住 `M` 看保护区域。
 - **多图**：拖入、`Ctrl+O` 选择、`Ctrl+V` 粘贴，缩略图条 + 左右方向键切换。
 - **缩放**：滚轮以外的 `Ctrl+=` / `Ctrl+-`、`F` 适合窗口、`0` 1:1。
-- **输出**：自动写入输出目录，`Ctrl+S` 另存为；透明通道保留。
+- **输出**：自动写入输出目录，`Ctrl+S` 另存为；透明通道与 ICC 色彩配置保留。
+- **设备**：自动 / GPU（DirectML）/ CPU，设置里可切换，失败自动回退 CPU。
 - 浅色 / 深色 / 跟随系统主题；中文界面，HarmonyOS Sans 字体，Lucide 图标。
 - 自更新（清单 JSON + SHA-256 校验 + Inno Setup 静默升级）、日志轮转、崩溃报告、诊断包导出。
 
@@ -23,23 +25,24 @@
 `dist/AnimeDenoise-<版本>-setup.exe` 是每用户安装（无需管理员），默认装到
 `%LOCALAPPDATA%\Programs\AnimeDenoise`。
 
-安装包本身约 4.6 MB：程序、worker 脚本、字体、图标。**AI 运行环境不随包分发**，首次启动时应用会
-调用 [uv](https://github.com/astral-sh/uv) 在 `%LOCALAPPDATA%\AnimeDenoise\runtime` 里装 Python 3.12 +
-PyTorch（NVIDIA 卡自动选 CUDA 版，否则 CPU 版）+ 去噪依赖，约 2 GB，只需一次。
+安装包自带全部推理资产：`runtime/`（onnxruntime.dll + DirectML.dll）、`models/`（esrgan_anime6b_x4.onnx 等
+随包模型）、`assets/`（字体、图标）。无需 Python、无需首次下载环境；CUGAN / APISR 模型可在设置页按需下载
+到 `%LOCALAPPDATA%\AnimeDenoise\models`。
 
 ## 从源码构建
 
 工具链全部由 [mise](https://mise.jdx.dev) 管理，见 `mise.toml`：
 
 ```bash
-mise install            # python / node / uv
-mise run build          # Release，产物 build/AnimeDenoise.exe
+mise install            # python / node（资产子集脚本用）
+mise run build          # Release，产物 build/AnimeDenoise.exe + build/anime-denoise.exe
 mise run run            # 构建并启动
 mise run dist           # 打安装包到 dist/（需要 Inno Setup 6 的 ISCC.exe）
 ```
 
 构建需要 Visual Studio 的 C++ x64 工具集与 PowerShell 7；`build.ps1` 通过 `toolchain.ps1` 自己
-捕获 vcvarsall 环境，不要求预置 Developer Command Prompt。
+捕获 vcvarsall 环境，不要求预置 Developer Command Prompt。`build/` 下同时产出 CLI 工具
+`anime-denoise.exe`（用法见 `docs/cli-spec.md`）与 GUI 的 `runtime/`、`models/` 副本。
 
 `mise run assets` 从 `_dl/` 里的原始字体重新生成子集（HarmonyOS Sans 的 GB2312 子集、完整 Lucide 图标字体），
 `mise run check-fonts` 校验 `src/` 里出现的每个非 ASCII 字符都在 UI 字体里 —— 构建前的守门检查。
@@ -49,41 +52,35 @@ mise run dist           # 打安装包到 dist/（需要 Inno Setup 6 的 ISCC.e
 ```
 src/
   main.c        进程入口：窗口、事件循环、命令行
-  app.c         状态机：任务、worker 事件、意图、启动
+  app.c         状态机：任务、denoiser 事件、意图、启动
   ui_shell.c    顶栏 / 侧栏 / 缩略图条 / 状态行 / 对话框
-  ui_stage.c    画布：对比、笔刷、套索、缩放
+  ui_stage.c    画布：对比、笔刷、套索、缩放、引擎面板
   chrome.c      自绘标题栏：命中测试、缩放光标、最大化
-  backend.c     侧车桥：进程、管道、读线程、协议派发
-  backend_json.c JSON / base64 / UTF-16 助手
+  denoiser.c    推理工作线程：任务/事件环、SR 缓存、设备与模型管理
   loader.c      解码线程：解码 + 缩放 + 缩略图
-  img.c         WIC 解码/编码/缩放/剪贴板
+  img.c         WIC 解码/编码/缩放/剪贴板/保护合成
   mask.c        蒙版：笔刷、套索、羽化、瓦片撤销、磁力套索
   config.c      设置与路径
   log.c         日志轮转 / 崩溃报告 / 诊断包
-  runtime.c     uv → Python → PyTorch 首次装配
   update.c      更新状态机
   update_io.c   WinHTTP / JSON / SHA-256
   ui_tokens.h   视觉 token 单源
-  engine/       原生推理引擎（Phase 2）：ONNX Runtime + DirectML 装载、
+  engine/       原生推理引擎：ONNX Runtime + DirectML 装载、
                 Pillow 逐字节 resample、pocketfft L0、模型下载；
                 对外契约 engine.h，规范 design.md §7
-worker/worker.py 侧车：模型、去噪、合成、模型下载
-assets/          字体子集、完整 Lucide、随包 denoise.py
+  cli/          独立命令行 anime-denoise.exe（共享 anime_engine）
+models/          随包 ONNX 模型
+assets/          字体子集、完整 Lucide、许可文件
 installer/       Inno Setup 脚本与打包脚本
-docs/            design.md / visual-design.md / worker-protocol.md
+docs/            design.md / visual-design.md / cli-spec.md
 .context/        ADR / 当前状态 / 踩坑
 tests/           test-suite.md（行为规格）+ 各模块独立测试
 ```
 
-
-## 协议
-
-侧车与本程序之间是「一行一个 JSON」的 stdio 协议，见 `docs/worker-protocol.md`。
-
 ## 许可
 
 - 本程序：仓库内 LICENSE。
-- `assets/python/denoise.py`：MIT，© CXP-2024。
+- 去噪算法参考 `denoise.py`：MIT，© CXP-2024。
 - 字体：HarmonyOS Sans（华为设备有限公司授权，见 `assets/fonts/LICENSE-HarmonyOS-Sans.txt`）。
 - 图标：Lucide，ISC。
 - UI 框架：CUI，MIT。
@@ -91,8 +88,10 @@ tests/           test-suite.md（行为规格）+ 各模块独立测试
 
 ## 线程
 
-- UI 线程只做布局、贴图上传与状态迁移；worker 启动是异步的（`wb_start_async`），
+- UI 线程只做布局、贴图上传与状态迁移；引擎启动是异步的（`dn_start` → `DN_EV_READY`），
   窗口 0.8 s 内可用，启动期间任务停在「排队中」。
+- 一个 below-normal 的 denoiser 线程独占 `eng *`：推理、SR 缓存、设备切换、模型下载全部串行在其上，
+  UI 只投递任务、每帧收事件。
 - 图片解码在 `loader.c` 的线程里完成，UI 每帧只取结果并建纹理（实测 0.37 ms/张）。
 - 只有原生模态对话框会阻塞 UI。
 

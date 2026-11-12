@@ -47,3 +47,12 @@
 **现象**：拖滑杆时磁盘持续写入，且设置文件可能半写。
 **根因**：`settings_from_state()` 每次值变化都 `cfg_save()`。
 **修法**：内存置脏标记，停止拖动 500 ms 或关窗时落盘。
+
+## L-008 全不透明 RGBA 经 WIC 写 PNG 仍是 32bpp，破坏对 Pillow 的平价
+
+**现象**：CLI/GUI 输出的 PNG 全是 `8-bit/color RGBA`，而 `denoise.py`（Pillow）对无 alpha 的图写 RGB。
+**根因**：宿主内部一律用 straight RGBA8；`img_encode_png_icc` 无脑请求 32bpp，
+即使 alpha 通道全 255。
+**修法**：编码前扫一遍 alpha——全 255 走 24bpp BGR（WIC 自动丢 alpha），
+有真 alpha 才走 32bpp。判断代价是 O(n) 一次内存扫描，相对编码可忽略。
+**教训**：像素格式平价要在**编码出口**对齐，内部表示统一不代表输出一致。

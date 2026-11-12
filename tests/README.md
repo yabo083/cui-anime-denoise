@@ -49,10 +49,14 @@ declaration (`mask_hist_bytes_used`, defined in `src/mask.c`). It is
 deliberately not in `mask.h`: the contract header only carries what the
 application needs.
 
-## test_backend.c / stub_worker.py / smoke_worker.py
+## test_denoiser.c — the in-process inference worker (src/denoiser.c)
 
-See the header comment of `tests/test_backend.c` for the worker-side driver
-(`test_backend.exe [python.exe] [worker.py] [venv_dir] [image]`).
+Covers the thread lifecycle (start -> READY, restart, shutdown), job
+queueing, progress monotonicity, cancellation, the two-entry SR cache
+(re-run with only l0 changed must report `sr_cached`), and event ownership.
+Needs the staged `build\runtime` + `build\models` (or the `DN_RUNTIME_DIR` /
+`DN_MODELS_DIR` env overrides) and the real engine. Build lines are in the
+file's header comment.
 
 ## test_config.c — settings, log, crash handler, diagnostics
 
@@ -77,6 +81,14 @@ Started from the repository root. The run is hermetic: it points
 The diagnostics case shells out to `python` (`zipfile.testzip()`), so a Python
 on `PATH` is required; the crash case re-launches the same executable with
 `--crash-child` and expects exit code `0xC0000005`.
+
+## test_img.c — WIC decode/encode parity + host compositing (src/img.c)
+
+Format-parity cases (alpha, ICC, orientation, 16-bit, CMYK) plus
+`img_composite_masked`: the host-side blend that replaced the Python
+worker's protect-region composite -- mask 0/255 endpoints, feathered
+interior values, alpha passthrough. Build lines are in the file's header
+comment.
 
 ## test_engine.c — the native engine's deterministic maths (src/engine/)
 

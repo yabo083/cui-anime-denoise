@@ -12,21 +12,24 @@
 **背景**：torch 无法嵌入 C 进程；模型更新频繁。
 **决定**：`worker.py` 以 JSONL over stdio 与宿主通信，宿主只管调度。
 **代价**：进程间序列化、跨进程错误处理；必须处理 Windows 上 stdin-reader 与 .pyd 导入的死锁（见 LESSONS）。
-**状态**：已采纳。
+**状态**：已被 ADR-008 取代（torch 非必需被 Phase 1/2 证伪，worker.py 已删除）。
 
 ## ADR-003 蒙版合成放在 worker
 
 **背景**：全分辨率去噪结果只在 worker 侧；传到宿主再合成要 67 MB/张。
 **决定**：宿主上传 8-bit 灰度蒙版（PNG+base64），worker 用缓存的去噪结果合成并写盘。
 **代价**：合成要走一次进程往返（≈0.5 s @2096²）；需按 worker job id 命中结果缓存。
-**状态**：已采纳。
+**状态**：已被 ADR-008 取代 —— 进程内推理后结果像素本来就在宿主手里，
+`img_composite_masked` 直接合成，无 IPC。
 
 ## ADR-004 运行时按需安装，不随包分发
 
 **背景**：CUDA 版 torch 约 2–3 GB，装进安装包会让分发体积失控。
 **决定**：安装包 4.6 MB；首次运行用 uv 装配 Python + torch + 依赖到 `%LOCALAPPDATA%`。
 **代价**：首启需要网络与 2 GB 下载；必须给出可视进度与可重试的失败态。
-**状态**：已采纳，端到端验证过一次（3.1 GB runtime，随后成功去噪）。
+**状态**：已被 ADR-008 取代 —— 原生运行时只有 ORT+DirectML ≈35 MB，
+随包分发比按需安装更简单；`runtime.c` 已删除，`%LOCALAPPDATA%\models`
+只存按需下载的 CUGAN/APISR。
 
 ## ADR-005 基准用无窗口 CUI 上下文
 
@@ -52,4 +55,18 @@ resize 逐字节移植 Pillow 8bpc；L0 用 pocketfft 逐位复刻 float64 参�
 **代价**：瓦片、设备回退、sanity tile 都要自己维护；ORT+DirectML 运行时约 35 MB 需随包或按需下载；
 APISR/CUGAN 的 .pth 仍由用户下载（5–18 MB，不再是 2 GB）。
 **状态**：已采纳。Phase 2 引擎层完成并通过逐位平价（SR ±1 级 ≥99.98% 一致、同输入 L0 逐字节一致）；
-UI 接入是后续切片。
+UI 接入由 ADR-008 收口。
+
+## ADR-008 进程内 denoiser 线程取代 Python 侧车（Phase 4a）
+
+**背景**：引擎（ADR-007）就绪后，Python worker 只剩一个壳——把宿主像素序列化过去、
+再把结果传回来。3.1 GB 运行时、首次装配、stdio 协议与进程生命周期全是这一壳的成本。
+**决定**：新增 `src/denoiser.c`：一条 `THREAD_PRIORITY_BELOW_NORMAL` 线程独占
+`eng *`，任务/事件用有界环（满时只丢 PROGRESS，终结事件不丢）；UI 只投递
+`dn_push_denoise`（RGBA 像素直接拷贝进环，无 IPC）并每帧 `dn_poll`；
+合成与写盘移回宿主（`img_composite_masked` + `img_encode_png_icc`，保留 alpha/ICC）；
+SR 结果缓存 2 项 LRU（键 = src_key+down_pct）使改 L0 重跑不重复推理；
+60 s 空闲释放推理会话。worker.py、backend、runtime 装配、协议文档全部删除。
+**代价**：合成+羽化+写盘落在 UI 线程（受控：笔画结束触发，4096² ≈40 ms 可接受）；
+`app.c` 涨到 1251 行超出 ≤800 上限，待按职责拆（已登记 STATE.md）。
+**状态**：已采纳。E2E 验证：启动→READY→去噪→写盘 16.3 s，无 Python 进程。

@@ -25,9 +25,9 @@
 ### 2.1 三条铁律
 
 1. **UI 线程只做布局、贴图上传和状态迁移**。任何可能超过 8 ms 的工作都不许在帧内同步执行。
-2. **worker 进程的启动是异步的**：`wb_start_async()` 只做 `CreateProcessW` + 起读线程，立即返回；
-   `ready` 通过事件到达，期间 UI 显示启动横幅，任务停在 `QUEUED`。
-3. **阻塞调用只允许两类**：原生模态对话框（打开/另存为/选目录）、进程退出时的 `wb_shutdown`。
+2. **推理引擎的启动是异步的**：`dn_start()` 只做 `CreateThread`，立即返回；
+   `DN_EV_READY` 通过事件到达，期间 UI 显示启动横幅，任务停在 `QUEUED`。
+3. **阻塞调用只允许两类**：原生模态对话框（打开/另存为/选目录）、关窗时的 `dn_shutdown`（有界 join）。
    两者都由用户显式触发或发生在关窗后。
 
 ### 2.2 谁在哪个线程
@@ -35,34 +35,35 @@
 | 工作 | 线程 | 理由 |
 |---|---|---|
 | CUI 帧、状态迁移、纹理创建 | UI | 纹理句柄只在上传线程有效 |
-| worker 进程 I/O（stdin 写、stdout 读） | 读线程 | 管道读必须独立，否则一帧被推理阻塞 |
-| 图像解码（`img_decode_file`） | **加载线程** | 1200 万像素约 36 ms，批量拖入会连坐 |
+| 推理、SR 缓存、设备切换、模型下载 | **denoiser 线程**（below-normal） | 引擎调用线程兼容而非线程安全，一个 `eng *` 只允许一条推理 |
+| 图像解码（`img_decode_file_ex`） | **加载线程** | 1200 万像素约 36 ms，批量拖入会连坐 |
 | 缩略图/显示纹理缩放 | 加载线程 | 与解码同批产出 |
-| 蒙版 PNG 编码（合成前上传） | **UI**（受控） | 只在笔画结束触发，≤64 MB 蒙版约 20 ms；超过 4096² 的图改为后台线程 |
-| 推理、合成、模型下载 | Python worker | 独立进程 |
+| 蒙版羽化 + 保护合成 + 输出 PNG | **UI**（受控） | 像素已在手里（`j->res`），无 IPC；4096² 羽化约 40 ms，只在笔画结束触发 |
 | 更新检查/下载 | 更新线程 | 网络不可控 |
 
-### 2.3 worker 状态机
+### 2.3 denoiser 状态机
 
 ```
-        wb_start_async()
-IDLE ─────────────────────► SPAWNING
-                              │  CreateProcessW 失败 → FAILED(retry)
+        dn_start()
+IDLE ─────────────────────► BOOT
+                              │  CreateThread 失败 → dn_start false（重试）
                               ▼
-                          BOOTING  ◄── boot{stage,value}
-                              │  ready{model_ready}
+                        eng_create + eng_prepare
+                              │  DN_EV_READY{ready_ok:1, device, note}
                               ├─────────────► READY
-                              │  ready{model_ready:false} → MODELS(download)
-                              │  超时 180 s → TIMEOUT(retry)
-READY ──(stdout 关闭)──────► DEAD ──(用户点重试)──► SPAWNING
-READY ──(worker error)─────► WARN(横幅 + 可关闭)
+                              │  DN_EV_READY{ready_ok:0, message} → FAILED（横幅 + 重试）
+                              │  超时 60 s → 按 FAILED 处理 + dn_shutdown
+READY ──(任务内引擎错误)──► WARN(横幅 + 可关闭)
+任一状态 ──(重试/换设备)──► dn_restart：shutdown + start，重新发 READY
 ```
 
 规则：
 
 - 任何状态下 UI 都可交互（拖图、切图、改参数）。
-- `QUEUED` 任务只在 `READY` 时下发；`BOOTING/MODELS` 期间不清空队列。
-- 超时/死亡都要给出**可执行动作**（重试 / 打开日志），不只报错。
+- `QUEUED` 任务只在 `READY` 时下发；`BOOT` 期间不清空队列。
+- 超时/失败都要给出**可执行动作**（重试 / 打开日志），不只报错。
+- 事件环满时只丢最早的 PROGRESS；终结事件（DONE/ERROR/CANCELLED/READY）永不丢。
+- 空闲约 60 s 后 denoiser 线程释放推理会话（`eng_release_sessions`），下一个任务惰性重建。
 
 ### 2.4 加载队列
 
@@ -179,9 +180,10 @@ QUEUED ──ready──► RUNNING ──done──► DONE ──(参数变)�
 
 不变量：
 
-- 同一时刻只有一个 `RUNNING`（worker 串行）。
+- 同一时刻只有一个 `RUNNING`（denoiser 串行）。
 - `DONE` 的 `res_down_pct/res_l0` 记录**产生该结果**的参数；与当前参数不同即提示重跑。
-- 蒙版编辑不改状态，只置 `composite_dirty`；合成请求带**产生结果的 worker id**（结果缓存键）。
+- 蒙版编辑不改状态，只置 `composite_dirty`；合成在宿主侧对 `j->res` 直接做
+  （SR 缓存键是 `src_key` + `down_pct`，只影响重跑路径）。
 - `ERROR/CANCELLED` 不自动重试。
 
 ---
@@ -202,7 +204,7 @@ QUEUED ──ready──► RUNNING ──done──► DONE ──(参数变)�
 
 ## 7. 原生推理引擎（`src/engine/`）
 
-引擎是独立的静态库 `anime_engine`：不碰 UI、不碰 worker，输入输出都是 RGB8 位图。
+引擎是独立的静态库 `anime_engine`：不碰 UI、不碰 denoiser，输入输出都是 RGB8 位图。
 对外契约在 `src/engine/engine.h`；本节是**不许违背的不变量**。
 
 ### 7.1 线程与取消
