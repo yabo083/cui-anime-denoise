@@ -12,12 +12,18 @@
  * build\anime_engine.lib and build\third_party\CUI\cui.lib):
  *   pwsh -NoProfile -Command ". .\toolchain.ps1 -Quiet;
  *     New-Item -ItemType Directory -Force tmp\dnbuild | Out-Null;
- *     cl /nologo /utf-8 /W4 /O2 /D_CRT_SECURE_NO_WARNINGS /I src /c tests\test_denoiser.c /Fo:tmp\dnbuild\;
- *     cl /nologo /utf-8 /W4 /O2 /D_CRT_SECURE_NO_WARNINGS /I src /c src\denoiser.c /Fo:tmp\dnbuild\;
+ *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c tests\test_denoiser.c /Fo:tmp\dnbuild\;
+ *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c src\denoiser.c /Fo:tmp\dnbuild\;
+ *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c src\update_io.c /Fo:tmp\dnbuild\;
+ *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c src\update.c /Fo:tmp\dnbuild\;
+ *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c src\config.c /Fo:tmp\dnbuild\;
+ *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c src\log.c /Fo:tmp\dnbuild\;
  *     link /nologo tmp\dnbuild\test_denoiser.obj tmp\dnbuild\denoiser.obj
+ *       tmp\dnbuild\update_io.obj tmp\dnbuild\update.obj
+ *       tmp\dnbuild\config.obj tmp\dnbuild\log.obj
  *       build\anime_engine.lib build\third_party\CUI\cui.lib
  *       dxgi.lib winhttp.lib bcrypt.lib windowscodecs.lib ole32.lib oleaut32.lib
- *       uuid.lib shlwapi.lib advapi32.lib user32.lib gdi32.lib
+ *       uuid.lib shlwapi.lib shell32.lib advapi32.lib user32.lib gdi32.lib
  *       /OUT:tmp\dnbuild\test_denoiser.exe"
  *   tmp\dnbuild\test_denoiser.exe
  */

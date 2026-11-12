@@ -1,6 +1,32 @@
 # 当前状态
 
-更新：2026-11-12
+更新：2026-11-12（Phase 5 打包/加固落地）
+
+## 本轮完成（Phase 5）
+
+- **合成保护失败 toast 根因**：`app_test_fake_result()` 只置 `has_result`+预览纹理，
+  `j->res.rgb` 为 NULL，第一笔蒙版必然触发 toast——基准夹具缺陷，非合成 bug
+  （真实 `DN_EV_DONE` 恒携带源尺寸 RGB）。已让夹具生成半亮度源拷贝，
+  bench 从此走真实 `img_composite_masked` 路径（commit 231d2ab）。
+- **保护 E2E 实测**：bench `--protect-e2e` 1600×1200 fixture → 355,069 差异像素
+  （18.49%）全部落在笔刷带内、边框泄漏 0、方向错误 0、过冲 0、最强混合 0.91——
+  PASS（`tmp/phase5/compare.py` + Phase 3 venv PIL）。
+- **安装包**：`dist/AnimeDenoise-1.1.0-setup.exe` 32.25 MB。载荷=双 exe +
+  `runtime/`(ORT+providers+DML) + `models/`(esrgan+两个.skel) + `assets/`(含
+  licenses) + README/notices。无 Python、无 worker、无全量 CUGAN/APISR onnx。
+- **安装器集成**：`addpath`/`contextmenu` 任务默认勾选；HKCU image+avif/heic/heif
+  右键「用 Anime Denoise 去噪」；Pascal Script 整段增删用户 PATH；
+  卸载清 PATH+注册表，保留 `%LOCALAPPDATA%\AnimeDenoise`（交互卸载可选删，
+  静默卸载绝不动）。静默装/卸均验证 exit 0。
+- **骨架入库**：`models/*.skel.onnx`（31–108 KB）已提交，clone 即可 `mise run dist`；
+  全量 onnx 仍 ignore（commit d1a454c）。
+- **文档**：THIRD-PARTY-NOTICES 按原生栈重写、许可证随包进 `assets/licenses/`；
+  README 补安装选项/CLI 用法/模型表/fetch_deps 前置；design.md §7.5 记录骨架入库；
+  mise.toml 加 `deps` 任务。
+- **门禁**：`build.ps1` /W4 零警告；bench 交互断言 12/12 PASS；手动测试驱动
+  engine 120✓/mask 85✓/mask_png 88✓/config 60✓/denoiser 27✓/update ✓；
+  test_img 仅 3 项剪贴板失败（环境占用，L-007 已知 flake）。
+- 清理：仓库根散落的 8 个手工编译 .obj 已删除。
 
 ## 已交付并验证
 
