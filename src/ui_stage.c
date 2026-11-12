@@ -126,6 +126,16 @@ static bool mouse_pressed(cui_ctx *ui, cui_mouse_button b) {
     return hit;
 }
 
+/* A modal gates stage_handle_input, but these edge statics must still track
+ * the button, else the press that opened the modal leaves them armed and the
+ * first canvas gesture after it closes loses its press edge (the compare
+ * divider pans instead of grabbing, a brush dot lands on release). */
+void stage_track_buttons(cui_ctx *ui) {
+    (void)mouse_pressed(ui, CUI_MOUSE_LEFT);
+    (void)mouse_pressed(ui, CUI_MOUSE_RIGHT);
+    (void)mouse_pressed(ui, CUI_MOUSE_MIDDLE);
+}
+
 void mask_note(app_state *st, job *j) {
     j->mask_active = mask_any(&j->m);
     j->mask_tex_dirty = true;

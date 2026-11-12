@@ -33,6 +33,13 @@ static bool ov_pressed(cui_ctx *ui) {
 }
 static bool ov_down(cui_ctx *ui) { return cui_mouse_down(ui, CUI_MOUSE_LEFT); }
 
+/* While a modal gates input this function does not run, so its edge static
+ * would stay stuck on whatever the button did on the last ungated frame --
+ * the click that opens the settings sheet is a press, so the first real
+ * click after it closed would be eaten. Feeding the tracker keeps the edge
+ * honest without letting any input through. */
+void ui_overlay_track(cui_ctx *ui) { (void)ov_pressed(ui); }
+
 static cui_color text1(cui_ctx *ui) { return cui_token_color(ui, CUI_TOKEN_FOREGROUND); }
 static cui_color accent(cui_ctx *ui) { return cui_token_color(ui, CUI_TOKEN_ACCENT); }
 static int btn_state(cui_ctx *ui, cui_rect r) {

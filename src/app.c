@@ -408,8 +408,23 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
         if (added) engine_submit_next(st);
     }
 
+    /* A modal surface owns input: the canvas, the floats and the shortcuts
+     * must not see clicks and keys meant for it. CUI closes the topmost modal
+     * itself (Esc or a click outside), so our own Esc peeling stays off too. */
+    bool modal_open = st->show_settings || st->show_help ||
+                      st->show_about   || st->show_update;
     app_handle_drops(ui, st);
-    app_handle_keys(ui, st);
+    if (!modal_open) {
+        app_handle_keys(ui, st);
+    } else {
+        st->peek_orig = st->peek_mask = st->space_down = false;
+        st->drag_ctl = st->dragging_split = false;
+        if (st->painting) {           /* a stroke interrupted by a modal ends whole */
+            st->painting = st->stroke_open = false;
+            job *pj = job_selected(st);
+            if (pj) { mask_stroke_end(&pj->m, pj->hist); pj->composite_pending = true; }
+        }
+    }
     flush_composite(st);
 
     if (st->start_wanted) {
@@ -442,9 +457,17 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
      * never reaches the layer beneath it. */
     job *j = job_selected(st);
     ui_titlebar_input(st);
-    bool over_ui = ui_overlay_input(st, j);
-    if (j && st->stage_valid && !over_ui) stage_handle_input(st, j);
-    else (void)chrome_take_wheel();   /* nowhere to zoom: drop the notches */
+    if (modal_open) {
+        (void)chrome_take_wheel();
+        /* gated input must still feed the edge trackers, or the press that
+         * opened the modal leaves them armed and eats the next click */
+        ui_overlay_track(ui);
+        stage_track_buttons(ui);
+    } else {
+        bool over_ui = ui_overlay_input(st, j);
+        if (j && st->stage_valid && !over_ui) stage_handle_input(st, j);
+        else (void)chrome_take_wheel();   /* nowhere to zoom: drop the notches */
+    }
 
     /* While a stroke is running the overlay is rebuilt at most every 40 ms:
      * feathering the whole mask per frame costs several ms and would eat the

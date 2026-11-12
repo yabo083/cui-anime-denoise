@@ -360,6 +360,8 @@ void ui_titlebar(cui_ctx *ui, app_state *st);
 void draw_stage_area(cui_ctx *ui, app_state *st, float height);
 void ui_dialogs(cui_ctx *ui, app_state *st);
 void stage_handle_input(app_state *st, job *j);
+/* Feeds the stage's press-edge trackers while a modal gates input. */
+void stage_track_buttons(cui_ctx *ui);
 void stage_fit(job *j, cui_rect r);
 void stage_zoom_center(app_state *st, job *j, float factor);
 void rebuild_mask_texture(app_state *st, job *j);
@@ -379,6 +381,8 @@ void lasso_paint(cui_ctx *ui, app_state *st, job *j, cui_rect r);
 void ui_empty_paint(cui_ctx *ui, app_state *st, cui_rect r);
 void ui_float_paint(cui_ctx *ui, app_state *st, cui_rect r);
 bool ui_overlay_input(app_state *st, job *j);
+/* Feeds the float layer's press-edge tracker while a modal gates input. */
+void ui_overlay_track(cui_ctx *ui);
 void ui_tray_page(app_state *st, int dir);
 
 /* The custom-drawn Fluent primitives (ui_seg_draw, ui_button_draw,
