@@ -36,6 +36,11 @@ static HWND g_hwnd;
 static WNDPROC g_orig;
 static float g_title_points = UI_TOPBAR;
 static int g_dark = -1; /* -1 = DWM attributes not applied yet */
+/* last cursor we put up; while the window holds capture (a sizing or moving
+ * loop owns the pointer) we keep showing it instead of re-deciding */
+static LPCWSTR g_cursor;
+/* WM_MOUSEWHEEL notches waiting for the next UI frame; see chrome_take_wheel */
+static float g_wheel;
 
 static float dpi_scale(HWND h) {
     typedef UINT(WINAPI * get_dpi_fn)(HWND);
@@ -107,16 +112,18 @@ static LRESULT hit_test_screen(HWND h, POINT pt) {
     return HTCLIENT;
 }
 
-/* Cursor for a zone; NULL means "not ours", CUI keeps whatever it draws in the
- * client area (text beam, hand, ...). */
+/* Cursor for a hit code. WM_SETCURSOR's LOWORD(lParam) is already the
+ * WM_NCHITTEST result for the pointer's live position, so this is the whole
+ * decision table: no second lookup, no re-test against a window that may have
+ * moved since the system asked. Everything that is not a resize edge -- the
+ * caption, the client area, the app's own buttons -- is a plain arrow. */
 static LPCWSTR zone_cursor(LRESULT zone) {
     switch (zone) {
     case HTLEFT: case HTRIGHT: return IDC_SIZEWE;
     case HTTOP: case HTBOTTOM: return IDC_SIZENS;
     case HTTOPLEFT: case HTBOTTOMRIGHT: return IDC_SIZENWSE;
     case HTTOPRIGHT: case HTBOTTOMLEFT: return IDC_SIZENESW;
-    case HTCAPTION: return IDC_ARROW;
-    default: return NULL;
+    default: return IDC_ARROW;
     }
 }
 
@@ -144,23 +151,36 @@ static LRESULT CALLBACK chrome_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_SETCURSOR: {
-        /* CUI forces its own cursor for HTCLIENT; set the size cursors here or
-         * the edges look inert and resizing feels broken (design.md 3.2) */
+        /* LOWORD(lParam) is the hit code the system just got from our
+         * WM_NCHITTEST: the only trustworthy answer for where the pointer is in
+         * the frame. Re-testing with GetCursorPos here used to disagree with it
+         * while the window moved under the pointer, so the cursor flickered
+         * between arrow and size arrow.
+         *
+         * CUI would force its own arrow for HTCLIENT, so every code we accept is
+         * answered here and TRUE keeps the message from reaching it
+         * (design.md 3.2). */
         WORD hit = LOWORD(lp);
         if (hit == 0) break; /* forwarded by a child; not our frame */
-        LRESULT zone = hit;
-        if (hit == HTCLIENT || hit == HTCAPTION) {
-            /* the client-area codes do not say which band we are in, so resolve
-             * them from the live pointer; during a resize loop the code above is
-             * already the edge, and the pointer may be far from it */
-            POINT pt;
-            if (!GetCursorPos(&pt)) break;
-            zone = hit_test_screen(h, pt);
+
+        if (GetCapture() != h || !g_cursor) {
+            /* a sizing/moving loop owns the pointer while the window holds
+             * capture: the window is dragged with the cursor, so the band under
+             * it means nothing and re-deciding would flip the arrow mid-gesture
+             * (worst at corners, where the code oscillates between two axes).
+             * Keep the cursor the gesture started with. */
+            g_cursor = zone_cursor(hit);
         }
-        LPCWSTR id = zone_cursor(zone);
-        if (!id) break;
-        SetCursor(LoadCursorW(NULL, id));
+        SetCursor(LoadCursorW(NULL, g_cursor));
         return TRUE;
+    }
+
+    case WM_MOUSEWHEEL: {
+        /* keep wheel notches for the UI instead of letting CUI scroll whatever
+         * sits under the pointer; the UI takes them once per frame with
+         * chrome_take_wheel() and decides what they mean (zoom on the canvas) */
+        g_wheel += (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
+        return 0;
     }
 
     case WM_GETMINMAXINFO: {
@@ -235,6 +255,12 @@ void chrome_set_dark(bool dark) {
 }
 
 bool chrome_is_active(void) { return g_hwnd && GetActiveWindow() == g_hwnd; }
+
+float chrome_take_wheel(void) {
+    const float v = g_wheel;
+    g_wheel = 0.0f;
+    return v;
+}
 
 bool chrome_button_at(int x, int y) {
     if (!g_hwnd) return false;

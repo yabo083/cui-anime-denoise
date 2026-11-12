@@ -9,6 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* What cui_separator draws: 1pt. The strip centers its tile row in what its own
+ * hairline leaves, so the tiles are optically centered in UI_STRIP. */
+#define UI_HAIRLINE 1.0f
+
+/* The queue is a result list, not a parameter: it keeps a fixed share of the
+ * sidebar's height (percent, for CUI_PCT) instead of growing with its content. */
+#define UI_QUEUE_PCT 40.0f
+
 /* ------------------------------------------------------------------------ */
 /* Tiles                                                                    */
 /* ------------------------------------------------------------------------ */
@@ -37,14 +45,16 @@ static void tile_paint(cui_ctx *ui, cui_rect r, void *user) {
     /* the picture is inset one point so the border never eats into it */
     cui_rect inner = { r.x + 1.0f, r.y + 1.0f, r.w - 2.0f, r.h - 2.0f };
     if (t->is_add) {
-        cui_draw_icon(ui, CUI_ICON_PLUS, r, UI_ICON_LG, hot ? CUI_COLOR_ACCENT : CUI_COLOR_TEXT_MUTED);
+        cui_draw_icon(ui, CUI_ICON_PLUS, inner, UI_ICON_LG, hot ? CUI_COLOR_ACCENT : CUI_COLOR_TEXT_MUTED);
     } else if (t->tex) {
         cui_draw_image(ui, t->tex, inner, (cui_rect){ 0, 0, 1, 1 }, CUI_CORNERS(UI_R_TILE - 1.0f),
                        CUI_RGBA(0xffffffff));
     } else {
-        cui_draw_icon(ui, CUI_ICON_IMAGE, r, UI_ICON_LG, CUI_COLOR_TEXT_MUTED);
+        cui_draw_icon(ui, CUI_ICON_IMAGE, inner, UI_ICON_LG, CUI_COLOR_TEXT_MUTED);
     }
-    cui_draw_rect_border(ui, r, CUI_CORNERS(UI_R_TILE), CUI_RGBA(0x00000000),
+    /* the ring insets one point like the picture: a selected tile never grows
+     * past the frame its neighbours are laid out at */
+    cui_draw_rect_border(ui, inner, CUI_CORNERS(UI_R_TILE - 1.0f), CUI_RGBA(0x00000000),
                          (t->selected || hot) ? CUI_COLOR_ACCENT : CUI_COLOR_BORDER,
                          t->selected ? 2.0f : 1.0f);
 }
@@ -284,10 +294,13 @@ static bool ui_slider_row(cui_ctx *ui, const char *id, const char *label, float 
 }
 
 void ui_sidebar(cui_ctx *ui, app_state *st) {
-    /* Every group is title (UI_FS_LABEL) + content + hairline; groups sit
+    /* Two segments, not three stacked groups: parameters grow with their content
+     * and stop where it ends; the queue is a result list, so it keeps a fixed
+     * share of the pane and carries its own surface and hairline. Groups sit
      * UI_GAP apart, their own rows UI_GAP_SM apart. */
     cui_column(ui, .width = CUI_PX(UI_SIDEBAR), .height = CUI_FILL, .bg = CUI_COLOR_SURFACE_MUTED,
                .pad = UI_PANE_PAD, .gap = UI_GAP) {
+        /* --- segment 1: parameters (content height) --- */
         /* --- strength --- */
         cui_column(ui, .width = CUI_FILL, .gap = UI_GAP_SM) {
             cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
@@ -353,44 +366,52 @@ void ui_sidebar(cui_ctx *ui, app_state *st) {
             }
         }
 
-        cui_separator(ui);
+        /* the parameter block ends here; the spacer absorbs what the queue
+         * segment does not take, so the queue stays docked to the pane's bottom */
+        cui_spacer(ui);
 
-        /* --- queue --- */
-        cui_column(ui, .width = CUI_FILL, .gap = UI_GAP_SM) {
-            char count[48];
-            snprintf(count, sizeof count, "%d", st->count);
-            cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-                cui_text(ui, "队列", .font = CUI_FONT_MEDIUM, .size = UI_FS_LABEL,
-                         .color = CUI_COLOR_TEXT_SECONDARY);
-                cui_spacer(ui);
-                cui_badge(ui, count, .size = CUI_SIZE_SM);
-            }
-            if (st->count == 0) {
-                cui_text(ui, "还没有图片。拖入、粘贴或点下面的按钮添加。", .size = UI_FS_CAPTION,
-                         .color = CUI_COLOR_TEXT_MUTED);
-            }
-        }
-        /* cards lift 2pt on hover and cast a raised shadow; UI_GAP is the
-         * clearance docs/design.md §4.4 asks the scroll area to keep, so the
-         * lift is never cut off by the scroll clip (cui_card_opts has no clip). */
-        cui_scroll(ui, .id = "queue", .height = CUI_FILL, .gap = UI_GAP, .pad = UI_GAP,
-                   .fade_edges = true) {
-            for (int i = 0; i < st->count; i++) ui_queue_row(ui, st, i);
-        }
+        /* --- segment 2: queue (fixed share, own surface) --- */
+        cui_column(ui, .id = "sidebar_queue", .width = CUI_FILL,
+                   .height = CUI_PCT(UI_QUEUE_PCT), .bg = CUI_COLOR_SURFACE, .gap = 0) {
+            cui_separator(ui);   /* the segment's top hairline */
+            cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = UI_PANE_PAD,
+                       .gap = UI_GAP_SM) {
+                char count[48];
+                snprintf(count, sizeof count, "%d", st->count);
+                cui_row(ui, .width = CUI_FILL, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
+                    cui_text(ui, "队列", .font = CUI_FONT_MEDIUM, .size = UI_FS_LABEL,
+                             .color = CUI_COLOR_TEXT_SECONDARY);
+                    cui_spacer(ui);
+                    cui_badge(ui, count, .size = CUI_SIZE_SM);
+                }
+                if (st->count == 0) {
+                    cui_text(ui, "还没有图片。拖入、粘贴或点下面的按钮添加。", .size = UI_FS_CAPTION,
+                             .color = CUI_COLOR_TEXT_MUTED);
+                } else {
+                    /* cards lift 2pt on hover and cast a raised shadow; UI_GAP is the
+                     * clearance docs/design.md §4.4 asks the scroll area to keep, so the
+                     * lift is never cut off by the scroll clip (cui_card_opts has no clip). */
+                    cui_scroll(ui, .id = "queue", .height = CUI_FILL, .gap = UI_GAP, .pad = UI_GAP,
+                               .fade_edges = true) {
+                        for (int i = 0; i < st->count; i++) ui_queue_row(ui, st, i);
+                    }
+                }
 
-        cui_row(ui, .width = CUI_FILL, .gap = UI_GAP) {
-            if (cui_button(ui, "添加图片", .variant = CUI_BUTTON_PRIMARY, .icon = CUI_ICON_PLUS,
-                           .shortcut = "Ctrl O")) {
-                st->want_browse = true;
+                cui_row(ui, .width = CUI_FILL, .gap = UI_GAP) {
+                    if (cui_button(ui, "添加图片", .variant = CUI_BUTTON_PRIMARY, .icon = CUI_ICON_PLUS,
+                                   .shortcut = "Ctrl O")) {
+                        st->want_browse = true;
+                    }
+                    if (cui_icon_button(ui, CUI_ICON_CLIPBOARD, .variant = CUI_BUTTON_OUTLINE,
+                                        .tooltip = "粘贴剪贴板里的图片（Ctrl+V）")) {
+                        st->want_paste = true;
+                    }
+                }
+                if (cui_button(ui, "清空已完成", .variant = CUI_BUTTON_GHOST, .full_width = true,
+                               .icon = CUI_ICON_TRASH_2, .disabled = st->count == 0)) {
+                    st->want_clear = true;
+                }
             }
-            if (cui_icon_button(ui, CUI_ICON_CLIPBOARD, .variant = CUI_BUTTON_OUTLINE,
-                                .tooltip = "粘贴剪贴板里的图片（Ctrl+V）")) {
-                st->want_paste = true;
-            }
-        }
-        if (cui_button(ui, "清空已完成", .variant = CUI_BUTTON_GHOST, .full_width = true,
-                       .icon = CUI_ICON_TRASH_2, .disabled = st->count == 0)) {
-            st->want_clear = true;
         }
     }
 }
@@ -404,33 +425,39 @@ void ui_strip(cui_ctx *ui, app_state *st) {
      * canvas instead of both sitting on the same white */
     cui_column(ui, .width = CUI_FILL, .height = CUI_PX(UI_STRIP), .bg = CUI_COLOR_SURFACE, .gap = 0) {
         cui_separator(ui);
-        cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .pad_x = UI_GAP, .gap = UI_GAP,
-                .align = CUI_ALIGN_CENTER) {
-        cui_scroll(ui, .id = "strip", .height = CUI_PX(UI_STRIP - UI_GAP), .horizontal = true,
-                   .gap = UI_GAP) {
-            /* the scroll container stacks children vertically, so the thumbnails
-             * need an explicit row inside it */
-            cui_row(ui, .width = CUI_FIT, .gap = UI_GAP, .align = CUI_ALIGN_CENTER) {
-                for (int i = 0; i < st->count; i++) {
-                    job *j = &st->jobs[i];
-                    cui_push_id_int(ui, 9000 + i);
-                    tile_ctx tc = { .tex = j->thumb_tex, .is_add = false, .selected = st->selected == i };
-                    char cid[32];
-                    snprintf(cid, sizeof cid, "thumb_%d", i);
-                    cui_canvas_result cr = cui_canvas(ui, cid, CUI_PX(UI_TILE), CUI_PX(UI_TILE),
-                                                      tile_paint, &tc, sizeof tc);
-                    if (cr.clicked && st->selected != i) job_focus(st, i);
-                    cui_pop_id(ui);
+        /* Every tile - thumbnail or "add" - is a child of one row, gets the same
+         * CUI_PX(UI_TILE) box and starts at the same edge, so their frames (and
+         * their top edge) are identical by construction, whatever the contents. */
+        cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .pad_x = UI_GAP,
+                .pad_y = (UI_STRIP - UI_TILE - UI_HAIRLINE) * 0.5f, .gap = UI_GAP,
+                .align = CUI_ALIGN_START) {
+            cui_scroll(ui, .id = "strip", .width = CUI_FILL, .height = CUI_PX(UI_TILE),
+                       .horizontal = true, .gap = UI_GAP) {
+                /* the scroll container stacks children vertically, so the tiles
+                 * need an explicit row inside it; that row is top-aligned in the
+                 * viewport, which is exactly UI_TILE tall */
+                cui_row(ui, .width = CUI_FIT, .height = CUI_PX(UI_TILE), .gap = UI_GAP,
+                        .align = CUI_ALIGN_START) {
+                    for (int i = 0; i < st->count; i++) {
+                        job *j = &st->jobs[i];
+                        cui_push_id_int(ui, 9000 + i);
+                        tile_ctx tc = { .tex = j->thumb_tex, .is_add = false, .selected = st->selected == i };
+                        char cid[32];
+                        snprintf(cid, sizeof cid, "thumb_%d", i);
+                        cui_canvas_result cr = cui_canvas(ui, cid, CUI_PX(UI_TILE), CUI_PX(UI_TILE),
+                                                          tile_paint, &tc, sizeof tc);
+                        if (cr.clicked && st->selected != i) job_focus(st, i);
+                        cui_pop_id(ui);
+                    }
+                    /* the "add" tile is the same box as a thumbnail, only its contents differ */
+                    tile_ctx add = { .tex = 0, .is_add = true, .selected = false };
+                    if (cui_canvas(ui, "strip_add", CUI_PX(UI_TILE), CUI_PX(UI_TILE),
+                                   tile_paint, &add, sizeof add).clicked) {
+                        st->want_browse = true;
+                    }
+                    cui_tooltip(ui, "添加图片（Ctrl+O）");
                 }
             }
-        }
-        /* the "add" tile is the same box as a thumbnail, only its contents differ */
-        tile_ctx add = { .tex = 0, .is_add = true, .selected = false };
-        if (cui_canvas(ui, "strip_add", CUI_PX(UI_TILE), CUI_PX(UI_TILE),
-                       tile_paint, &add, sizeof add).clicked) {
-            st->want_browse = true;
-        }
-        cui_tooltip(ui, "添加图片（Ctrl+O）");
         }
     }
 }

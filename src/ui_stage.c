@@ -1,6 +1,7 @@
 /* ui_stage.c -- see AGENTS.md for the routing table and docs/design.md for the rules. */
 
 #include "app.h"
+#include "chrome.h"
 #include "icons.h"
 #include "ui_tokens.h"
 
@@ -22,13 +23,34 @@
 #define STAGE_HANDLE_RING_HOT 4.0f           /* divider handle outline, hover/drag */
 #define STAGE_BRUSH_MIN       3.0f           /* brush cursor radius floor, screen px */
 #define STAGE_BRUSH_HINT_ZOOM 0.2f           /* below this the cursor is not the coverage */
+#define STAGE_ZOOM_MIN        0.02f          /* view zoom range, screen points per image px */
+#define STAGE_ZOOM_MAX        16.0f
 
-static float img_w_of(const job *j) { return (float)(j->res_tex ? j->res_w : j->disp_w); }
-static float img_h_of(const job *j) { return (float)(j->res_tex ? j->res_h : j->disp_h); }
+/* The stage measures in image pixels, the space the mask, the edge map, the
+ * brush and the worker all use. Above DISPLAY_MAX the picture we draw is only
+ * a downscaled texture, so its size is NOT that space: measuring the brush,
+ * the lasso and the view in display pixels put a stroke's mask pixels a factor
+ * (mask/display) away from the cursor for every large image. */
+static float image_w(const job *j) {
+    if (j->m.w > 0) return (float)j->m.w;
+    if (j->orig.w > 0) return (float)j->orig.w;
+    return (float)j->disp_w;
+}
+static float image_h(const job *j) {
+    if (j->m.h > 0) return (float)j->m.h;
+    if (j->orig.h > 0) return (float)j->orig.h;
+    return (float)j->disp_h;
+}
 
 void stage_fit(job *j, cui_rect r) {
-    float iw = (float)j->disp_w, ih = (float)j->disp_h;
-    if (iw <= 0.0f || ih <= 0.0f) { j->view = (view2d){ 1.0f, 0.0f, 0.0f }; return; }
+    float iw = image_w(j), ih = image_h(j);
+    if (iw <= 0.0f || ih <= 0.0f) {
+        /* no texture yet: stay "unfitted" so the next frame fits for real
+         * instead of leaving a 1:1 view centred on the image origin */
+        j->view = (view2d){ 0.0f, 0.0f, 0.0f };
+        j->view_fitted = false;
+        return;
+    }
     const float pad = STAGE_FIT_PAD;
     float sx = (r.w - 2 * pad) / iw;
     float sy = (r.h - 2 * pad) / ih;
@@ -49,6 +71,8 @@ static void stage_ensure_view(job *j, cui_rect r) {
         stage_fit(j, r);
 }
 
+/* Image pixel <-> screen point. `zoom` is screen points per image pixel and
+ * (cx, cy) is the image point that sits at the canvas centre. */
 static void img_to_screen(const job *j, cui_rect r, float ix, float iy, float *sx, float *sy) {
     float z = j->view.zoom;
     *sx = r.x + r.w * 0.5f + (ix - j->view.cx) * z;
@@ -60,6 +84,27 @@ static void screen_to_img(const job *j, cui_rect r, float sx, float sy, float *i
     if (z <= 0.0f) z = 1.0f;
     *ix = j->view.cx + (sx - (r.x + r.w * 0.5f)) / z;
     *iy = j->view.cy + (sy - (r.y + r.h * 0.5f)) / z;
+}
+
+/* Zooms by `factor` with the image point under (sx, sy) held in place, so the
+ * picture grows out from under the pointer instead of from the canvas centre.
+ * Solving screen = centre + (image - c) * z for the new centre:
+ *   c' = image - (screen - centre) / z'
+ * The clamp is applied to z' before the centre is solved, which keeps the
+ * anchor exact at the ends of the range too. */
+static void stage_zoom_at(job *j, cui_rect r, float sx, float sy, float factor) {
+    float z = j->view.zoom;
+    if (z <= 0.0f || !(factor > 0.0f)) return;
+    float nz = z * factor;
+    if (nz < STAGE_ZOOM_MIN) nz = STAGE_ZOOM_MIN;
+    if (nz > STAGE_ZOOM_MAX) nz = STAGE_ZOOM_MAX;
+    if (nz == z) return;
+    float ix, iy;
+    screen_to_img(j, r, sx, sy, &ix, &iy);
+    j->view.zoom = nz;
+    j->view.cx = ix - (sx - (r.x + r.w * 0.5f)) / nz;
+    j->view.cy = iy - (sy - (r.y + r.h * 0.5f)) / nz;
+    j->view_fitted = false;
 }
 
 /* Zeroes on mouse buttons: true on the frame a press starts. */
@@ -134,8 +179,10 @@ void stage_handle_input(app_state *st, job *j) {
     cui_vec2 m = cui_mouse_pos(ui);
     bool inside = m.x >= r.x && m.x < r.x + r.w && m.y >= r.y && m.y < r.y + r.h;
 
-    float ix = 0.0f, iy = 0.0f;
-    screen_to_img(j, r, m.x, m.y, &ix, &iy);
+    /* The wheel is the canvas' own input: the notches are taken here, on every
+     * frame the canvas is up, so a scroll outside it is dropped rather than
+     * waiting for the next picture. */
+    float wheel = chrome_take_wheel();
 
     if (!inside) {
         if (st->painting) {
@@ -151,7 +198,14 @@ void stage_handle_input(app_state *st, job *j) {
      * drag, whatever tool the user switches to meanwhile */
     if (!cui_mouse_down(ui, CUI_MOUSE_LEFT)) st->dragging_split = false;
 
-    float br = st->brush_size * 0.5f;
+    /* Ctrl+wheel zooms around the image point under the cursor (a plain wheel
+     * keeps its usual meaning: nothing on the stage scrolls) */
+    if (wheel != 0.0f && (cui_key_mods(ui) & CUI_MOD_CTRL))
+        stage_zoom_at(j, r, m.x, m.y, powf(1.1f, wheel));
+
+    float ix = 0.0f, iy = 0.0f;
+    screen_to_img(j, r, m.x, m.y, &ix, &iy);
+
     bool tool_eraser = st->tool == TOOL_ERASE;
 
     if (st->tool == TOOL_BRUSH || st->tool == TOOL_ERASE) {
@@ -186,7 +240,6 @@ void stage_handle_input(app_state *st, job *j) {
             st->stroke_open = false;
             j->composite_pending = true;
         }
-        (void)br;
         return;
     }
 
@@ -296,7 +349,7 @@ static void stage_paint(cui_ctx *ui, cui_rect r, void *user) {
     draw_canvas_floor(ui, r);
 
     float z = j->view.zoom;
-    float iw = (float)(j->disp_w), ih = (float)(j->disp_h);
+    float iw = image_w(j), ih = image_h(j);
     float x0, y0;
     img_to_screen(j, r, 0.0f, 0.0f, &x0, &y0);
     cui_rect img = { x0, y0, iw * z, ih * z };
@@ -476,12 +529,18 @@ void ui_runtime_panel(cui_ctx *ui, app_state *st, float height) {
 }
 
 void draw_stage_area(cui_ctx *ui, app_state *st, float height) {
-    if (!st->bench && (st->rt.state == RT_INSTALLING || st->rt.state == RT_FAILED ||
-        (st->rt.state == RT_MISSING && !st->worker_up))) {
+    job *j = job_selected(st);
+    bool panel = !st->bench && (st->rt.state == RT_INSTALLING || st->rt.state == RT_FAILED ||
+                 (st->rt.state == RT_MISSING && !st->worker_up));
+    /* Nothing on the stage can zoom this frame (the installer panel or the drop
+     * zone is showing), so the wheel's notches are dropped here rather than
+     * landing on the next picture the user opens. */
+    if (panel || !j || !st->stage_valid) (void)chrome_take_wheel();
+
+    if (panel) {
         ui_runtime_panel(ui, st, height);
         return;
     }
-    job *j = job_selected(st);
     if (!j) {
         cui_row(ui, .width = CUI_FILL, .height = CUI_PX(height), .align = CUI_ALIGN_CENTER,
                 .justify = CUI_JUSTIFY_CENTER) {
@@ -566,13 +625,13 @@ void ui_stage_toolbar(cui_ctx *ui, app_state *st, job *j) {
         if (cui_icon_button(ui, CUI_ICON_ZOOM_OUT, .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST,
                             .tooltip = "缩小（Ctrl+-）")) {
             j->view_fitted = false;
-            j->view.zoom = j->view.zoom / 1.25f < 0.02f ? 0.02f : j->view.zoom / 1.25f;
+            j->view.zoom = j->view.zoom / 1.25f < STAGE_ZOOM_MIN ? STAGE_ZOOM_MIN : j->view.zoom / 1.25f;
         }
         cui_text(ui, zoom_label, .size = UI_FS_BODY, .nowrap = true, .tabular = true, .color = CUI_COLOR_TEXT_SECONDARY);
         if (cui_icon_button(ui, CUI_ICON_ZOOM_IN, .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST,
                             .tooltip = "放大（Ctrl+=）")) {
             j->view_fitted = false;
-            j->view.zoom = j->view.zoom * 1.25f > 16.0f ? 16.0f : j->view.zoom * 1.25f;
+            j->view.zoom = j->view.zoom * 1.25f > STAGE_ZOOM_MAX ? STAGE_ZOOM_MAX : j->view.zoom * 1.25f;
         }
         if (cui_icon_button(ui, CUI_ICON_MAXIMIZE_2, .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST,
                             .tooltip = "适合窗口（F）")) {
@@ -580,8 +639,8 @@ void ui_stage_toolbar(cui_ctx *ui, app_state *st, job *j) {
         }
         if (cui_button(ui, "1:1", .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM, .shortcut = "0")) {
             j->view.zoom = 1.0f;
-            j->view.cx = j->disp_w * 0.5f;
-            j->view.cy = j->disp_h * 0.5f;
+            j->view.cx = image_w(j) * 0.5f;
+            j->view.cy = image_h(j) * 0.5f;
             j->view_fitted = false;
         }
     }

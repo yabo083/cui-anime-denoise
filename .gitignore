@@ -34,3 +34,5 @@ dist/
 
 # Per-agent build directories
 build_*/
+build2/
+build*/
