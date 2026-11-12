@@ -351,6 +351,7 @@ void cfg_defaults(app_settings *s)
     s->output_dir[0] = 0;
     s->model_root[0] = 0;
     s->last_open_dir[0] = 0;
+    snprintf(s->save_name, sizeof s->save_name, "{app}_{date}-{time}");
 }
 
 static void clamp_int(int *v, int lo, int hi)
@@ -392,6 +393,7 @@ static void cfg_clamp(app_settings *s)
     s->output_dir[CFG_PATH_CAP - 1] = 0;
     s->model_root[CFG_PATH_CAP - 1] = 0;
     s->last_open_dir[CFG_PATH_CAP - 1] = 0;
+    s->save_name[sizeof s->save_name - 1] = 0;
 }
 
 /* ---- tiny growable string buffer (system info in log.c) ---- */
@@ -525,6 +527,8 @@ static void settings_to_json(const app_settings *s, cfg__sb *b)
     json_escape(b, s->model_root);
     cfg__sb_adds(b, ",\n    \"last_open_dir\": ");
     json_escape(b, s->last_open_dir);
+    cfg__sb_adds(b, ",\n    \"save_name\": ");
+    json_escape(b, s->save_name);
     cfg__sb_adds(b, "\n}\n");
 }
 
@@ -832,6 +836,8 @@ static void apply_setting(app_settings *s, const char *key, jtype t,
         j_string_field(t, str, s->model_root);
     } else if (strcmp(key, "last_open_dir") == 0) {
         j_string_field(t, str, s->last_open_dir);
+    } else if (strcmp(key, "save_name") == 0) {
+        j_string_field(t, str, s->save_name);
     }
 }
 

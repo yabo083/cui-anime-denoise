@@ -288,6 +288,23 @@ static void ui_settings_sheet(cui_ctx *ui, app_state *st) {
             }
 
             cui_separator(ui);
+            /* 保存文件名 */
+            cui_text(ui, "保存文件名", .font = CUI_FONT_MEDIUM, .size = 12.5f);
+            cui_text(ui, "另存为的默认名。变量：{app} {src} {date} {time} {suffix}",
+                     .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_SECONDARY);
+            if (cui_input(ui, "save_name", st->set.save_name, sizeof st->set.save_name,
+                          .placeholder = "{app}_{date}-{time}", .size = CUI_SIZE_SM,
+                          .width = CUI_FILL))
+                settings_from_state(st);
+            {
+                char prev[256];
+                app_save_default_name(st, job_selected(st), prev, sizeof prev);
+                char line[280];
+                snprintf(line, sizeof line, "预览：%s.png", prev);
+                cui_text(ui, line, .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_MUTED);
+            }
+
+            cui_separator(ui);
             /* 推理设备 */
             cui_text(ui, "推理设备", .font = CUI_FONT_MEDIUM, .size = 12.5f);
             cui_text(ui, st->device, .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_SECONDARY);

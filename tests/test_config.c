@@ -173,7 +173,8 @@ static bool settings_equal(const app_settings *a, const app_settings *b)
            a->window_maximized == b->window_maximized &&
            strcmp(a->output_dir, b->output_dir) == 0 &&
            strcmp(a->model_root, b->model_root) == 0 &&
-           strcmp(a->last_open_dir, b->last_open_dir) == 0;
+           strcmp(a->last_open_dir, b->last_open_dir) == 0 &&
+           strcmp(a->save_name, b->save_name) == 0;
 }
 
 /* --------------------------------------------------------------- tests */
@@ -235,6 +236,7 @@ static void test_roundtrip(void)
     StringCchCopyA(a.output_dir, CFG_PATH_CAP, "D:\\anime\\out");
     StringCchCopyA(a.model_root, CFG_PATH_CAP, "D:\\models");
     StringCchCopyA(a.last_open_dir, CFG_PATH_CAP, "D:\\anime\\in");
+    StringCchCopyA(a.save_name, sizeof a.save_name, "{src}_{date}");
 
     check(cfg_save(&a), "save modified settings");
     memset(&c, 0, sizeof c);

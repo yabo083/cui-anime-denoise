@@ -39,6 +39,9 @@ typedef struct app_settings {
     char output_dir[CFG_PATH_CAP];
     char model_root[CFG_PATH_CAP];     /* legacy dev override (unused by the native engine) */
     char last_open_dir[CFG_PATH_CAP];
+
+    /* save-as filename template: {app} {src} {date} {time} {suffix} */
+    char save_name[128];
 } app_settings;
 
 void cfg_defaults(app_settings *s);

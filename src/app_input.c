@@ -248,6 +248,49 @@ void app_do_paste(app_state *st) {
     enqueue_path(st, path);
 }
 
+/* Expands st->set.save_name into a dialog default. Tokens: {app} the product
+ * name, {src} the source file's stem, {date}/{time} the local save moment,
+ * {suffix} "_protected" when the result carries a protection mask. Anything
+ * Windows filenames cannot contain becomes an underscore, a stray ".png"
+ * tail is dropped (the dialog adds it back), and an empty expansion falls
+ * back to the built-in default. */
+void app_save_default_name(const app_state *st, const job *j, char *out, size_t cap) {
+    const char *tpl = st->set.save_name;
+    char date[16], clock_[16];
+    time_t t = time(NULL);
+    struct tm lt;
+    localtime_s(&lt, &t);
+    strftime(date, sizeof date, "%Y%m%d", &lt);
+    strftime(clock_, sizeof clock_, "%H%M%S", &lt);
+
+    size_t n = 0;
+    for (const char *p = tpl; *p && n + 1 < cap; ) {
+        const char *val = NULL;
+        size_t tok = 0;
+        if (strncmp(p, "{app}", 5) == 0)      { val = "AnimeDenoise"; tok = 5; }
+        else if (strncmp(p, "{src}", 5) == 0) { val = j ? j->stem : "image"; tok = 5; }
+        else if (strncmp(p, "{date}", 6) == 0) { val = date; tok = 6; }
+        else if (strncmp(p, "{time}", 6) == 0) { val = clock_; tok = 6; }
+        else if (strncmp(p, "{suffix}", 8) == 0) {
+            val = (j && j->mask_active) ? "_protected" : ""; tok = 8;
+        }
+        if (tok) {
+            p += tok;
+            for (; *val && n + 1 < cap; val++) out[n++] = *val;
+            continue;
+        }
+        char c = *p++;
+        if (c < 32 || c == '<' || c == '>' || c == ':' || c == '"' ||
+            c == '/' || c == '\\' || c == '|' || c == '?' || c == '*') c = '_';
+        out[n++] = c;
+    }
+    out[n] = 0;
+    /* no trailing dots or spaces, no double ".png" */
+    while (n > 0 && (out[n - 1] == '.' || out[n - 1] == ' ')) out[--n] = 0;
+    if (n >= 4 && _stricmp(out + n - 4, ".png") == 0) out[n - 4] = 0;
+    if (!out[0]) str_copy(out, cap, "AnimeDenoise");
+}
+
 void app_do_save(app_state *st, bool save_as) {
     job *j = job_selected(st);
     (void)save_as;   /* every save here asks for a target: 另存为 semantics */
@@ -256,7 +299,7 @@ void app_do_save(app_state *st, bool save_as) {
     if (!path_exists(src)) { toast(st, "输出文件不在了，请重新去噪"); return; }
 
     char name[256];
-    str_copy(name, sizeof name, path_basename(src));
+    app_save_default_name(st, j, name, sizeof name);
 
     char out[PATH_CAP];
     cui_file_dialog_opts opts;
