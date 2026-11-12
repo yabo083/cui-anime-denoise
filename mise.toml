@@ -31,5 +31,5 @@ description = "Fetch pinned ONNX Runtime + DirectML DLLs and the esrgan model in
 run = "pwsh -NoProfile -File tools/fetch_deps.ps1"
 
 [tasks.dist]
-description = "Build the Inno Setup installer into dist/"
-run = "pwsh -NoProfile -File installer/build_installer.ps1 -Version ${VERSION:-1.1.0}"
+description = "Build the Inno Setup installer into dist/ (version comes from CMakeLists.txt)"
+run = "pwsh -NoProfile -File installer/build_installer.ps1"
