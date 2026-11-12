@@ -1,0 +1,26 @@
+# Build output
+build/
+out/
+cmake-build-*/
+
+# Runtime output
+outputs/
+*.log
+
+# Scratch space (temporary scripts / intermediate files)
+tmp/
+
+# Python worker environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Editor / OS noise
+.vs/
+.vscode/
+.idea/
+*.user
+*.swp
+Thumbs.db
+desktop.ini
