@@ -94,6 +94,33 @@ target_link_libraries(anime_core PUBLIC
 target_link_libraries(AnimeDenoise PRIVATE anime_core)
 cui_app_target(AnimeDenoise)
 
+# Console front end (docs/cli-spec.md): shares the engine, the WIC image IO
+# and the updater's download helper -- never the GUI modules. CUI's static
+# lib is linked only so models.c's CUGAN zip extraction finds cui__inflate
+# (the linker keeps just that one object).
+add_executable(anime-denoise
+    src/cli/main.c
+    src/cli/sheet.c
+    src/img.c
+    src/img_clip.c
+    src/update_io.c)
+
+target_compile_definitions(anime-denoise PRIVATE
+    APP_VERSION="${PROJECT_VERSION}"
+    _CRT_SECURE_NO_WARNINGS=1
+    UNICODE=1
+    _UNICODE=1)
+
+target_link_libraries(anime-denoise PRIVATE
+    anime_engine
+    cui::cui
+    ole32 oleaut32 windowscodecs shlwapi uuid gdi32)
+
+if(MSVC)
+    target_compile_options(anime-denoise PRIVATE /utf-8 /W4 /permissive-)
+    target_compile_options(anime-denoise PRIVATE $<$<CONFIG:Release>:/O2>)
+endif()
+
 # A runnable build directory: <exe dir>\assets\... and <exe dir>\worker\...
 add_custom_command(TARGET AnimeDenoise POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory

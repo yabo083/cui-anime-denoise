@@ -52,6 +52,25 @@
 - 单元测试 `tests/test_engine.c`：120 checks 0 failures；`build.ps1` /W4 零警告。
 - 文档：design.md §7（引擎不变量）、ADR-007、AGENTS.md 路由与目录边界。
 
+## 本轮完成（19:05，Phase 3 A+B）
+
+- **Part A 图像平价**（已提交 `efb07e2`）：`img.c` 扩为 `decode_*_ex`（EXIF 方向、
+  RGB 系 ICC 提取、16-bit /257 门控缩放、CMYK→sRGB 经内嵌 ICC）+
+  `encode_png_icc`（iCCP 写回）；剪贴板移到 `img_clip.c` + `img_priv.h`。
+  11 项 fixture 对 PIL `open_image`：ICC 字节全等、灰度 16/EXIF/alpha/CMYK-fallback
+  像素全等，48bit RGB/RGBA16 与 CMYK-profile 差异在预期舍入内。
+- **Part B 独立 CLI**：`build\anime-denoise.exe`（`src/cli/main.c` 1095 行 +
+  `src/cli/sheet.c` 228 行 + CMake 目标），实现 `docs/cli-spec.md` 全量：
+  文件/文件夹/`-` stdin、`--stdout` 二进制 PNG、七方法 + `--all` 4x2 sheet、
+  `--l0/--down/--device/--models/--download/--json/--quiet`、退出码 0/1/2/3。
+- CLI 复用面：anime_engine + img.c/img_clip.c + update_io.c（三个 GUI 钩子
+  以本地 stub 满足）；CUI 静态库仅为 `cui__inflate` 链接。
+- 验证：31 项参数/错误矩阵全过；真实 `--download apisr` 18 MB + SHA-256 通过；
+  stdin→stdout 输出可解码 PNG；文件夹按序枚举并过滤非图片；
+  3 图 × 7 方法对 denoise.py 参考：l0-only 100% 逐字节，SR max 1–2，
+  链式 _l0 max 2–6、apisr max 3–4——与 `tmp/phase2/out` 驱动器裸输出
+  逐位一致（CLI 无额外偏差，差异即引擎既有容差）。
+
 ## 进行中
 
 - **chrome**：`WM_SETCURSOR` 缺失导致缩放不可见；最大化 inset 未处理（§3）——ChromeFix 切片。
