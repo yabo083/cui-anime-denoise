@@ -265,6 +265,18 @@ static void ui_settings_sheet(cui_ctx *ui, app_state *st) {
                                   .size = CUI_SIZE_SM))
                     set_theme_mode(ui, st, mode);
             }
+            cui_text(ui, "画布背景", .font = CUI_FONT_MEDIUM, .size = 12.5f);
+            cui_text(ui, "毛玻璃用最近一次输出的模糊色做底",
+                     .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_SECONDARY);
+            {
+                static const char *bgs[2] = { "纯色", "毛玻璃" };
+                int bg = st->set.canvas_bg;
+                if (cui_segmented(ui, "canvasbg", bgs, 2, &bg, .full_width = true,
+                                  .size = CUI_SIZE_SM) && st->set.canvas_bg != bg) {
+                    st->set.canvas_bg = bg;
+                    settings_from_state(st);
+                }
+            }
 
             cui_separator(ui);
             /* 输出文件夹 */

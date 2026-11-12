@@ -166,6 +166,7 @@ static bool settings_equal(const app_settings *a, const app_settings *b)
            dl0 < 1e-6f && dbs < 1e-5f && dbm < 1e-5f && dfp < 1e-5f &&
            a->theme_mode == b->theme_mode &&
            a->view_mode == b->view_mode &&
+           a->canvas_bg == b->canvas_bg &&
            a->auto_check_updates == b->auto_check_updates &&
            a->seen_welcome == b->seen_welcome &&
            a->window_w == b->window_w &&
@@ -228,6 +229,7 @@ static void test_roundtrip(void)
     a.feather_px = 64.0f;
     a.theme_mode = 2;
     a.view_mode = 1;
+    a.canvas_bg = 0;
     a.auto_check_updates = 0;
     a.seen_welcome = 1;
     a.window_w = 1600;

@@ -118,6 +118,9 @@ typedef struct job {
     double mask_tex_at;        /* last overlay rebuild, to throttle strokes */
     cui_texture thumb_tex;
     int thumb_w, thumb_h;
+    cui_texture bg_tex;        /* blurred result: the acrylic canvas floor */
+    int bg_w, bg_h;
+    bool bg_dirty;             /* set whenever res_tex is replaced */
 
     mask m;
     mask_hist *hist;

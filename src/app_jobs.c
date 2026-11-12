@@ -72,6 +72,7 @@ static void job_drop_textures(cui_ctx *ui, job *j) {
 void job_free(cui_ctx *ui, job *j) {
     job_drop_textures(ui, j);
     if (j->thumb_tex) { cui_image_destroy(ui, j->thumb_tex); j->thumb_tex = 0; }
+    if (j->bg_tex) { cui_image_destroy(ui, j->bg_tex); j->bg_tex = 0; }
     img_free(&j->orig);
     eng_image_free(&j->res);
     img_free_icc(j->icc);
@@ -479,6 +480,7 @@ static void job_res_texture(cui_ctx *ui, job *j, const img_pixels *px) {
     j->res_tex = cui_image_create(ui, prev.w, prev.h, prev.rgba);
     j->res_w = j->res_tex ? prev.w : 0;
     j->res_h = j->res_tex ? prev.h : 0;
+    j->bg_dirty = true;
     /* the unprotected preview no longer matches the new result */
     if (j->raw_tex) { cui_image_destroy(ui, j->raw_tex); j->raw_tex = 0; }
     img_free(&prev);

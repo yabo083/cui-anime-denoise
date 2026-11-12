@@ -297,10 +297,98 @@ void stage_handle_input(app_state *st, job *j) {
 /* Stage drawing                                                            */
 /* ------------------------------------------------------------------------ */
 
-/* The canvas floor: BG_CANVAS with a barely-there checker so transparency is
- * readable without competing with the artwork (spec: 对比 ≤4%). */
-static void draw_canvas_floor(cui_ctx *ui, cui_rect r) {
+/* One separable box pass over RGBA pixels: horizontal into tmp, vertical back.
+ * Edge samples clamp, so the window width is always 2r+1. */
+static void bg_box_pass(unsigned char *px, unsigned char *tmp, int w, int h, int r) {
+    const int n = 2 * r + 1;
+    for (int y = 0; y < h; y++) {
+        unsigned char *row = px + (size_t)y * w * 4, *dst = tmp + (size_t)y * w * 4;
+        int a = 0, rr = 0, g = 0, b = 0;
+        for (int x = -r; x <= r; x++) {
+            int c = x < 0 ? 0 : x > w - 1 ? w - 1 : x;
+            rr += row[c*4]; g += row[c*4+1]; b += row[c*4+2]; a += row[c*4+3];
+        }
+        for (int x = 0; x < w; x++) {
+            dst[x*4] = (unsigned char)(rr / n); dst[x*4+1] = (unsigned char)(g / n);
+            dst[x*4+2] = (unsigned char)(b / n); dst[x*4+3] = (unsigned char)(a / n);
+            int sub = x - r < 0 ? 0 : x - r, add = x + r + 1 > w - 1 ? w - 1 : x + r + 1;
+            rr += row[add*4] - row[sub*4]; g += row[add*4+1] - row[sub*4+1];
+            b += row[add*4+2] - row[sub*4+2]; a += row[add*4+3] - row[sub*4+3];
+        }
+    }
+    for (int x = 0; x < w; x++) {
+        int a = 0, rr = 0, g = 0, b = 0;
+        for (int y = -r; y <= r; y++) {
+            int c = y < 0 ? 0 : y > h - 1 ? h - 1 : y;
+            const unsigned char *s = tmp + ((size_t)c * w + x) * 4;
+            rr += s[0]; g += s[1]; b += s[2]; a += s[3];
+        }
+        for (int y = 0; y < h; y++) {
+            unsigned char *d = px + ((size_t)y * w + x) * 4;
+            d[0] = (unsigned char)(rr / n); d[1] = (unsigned char)(g / n);
+            d[2] = (unsigned char)(b / n); d[3] = (unsigned char)(a / n);
+            int sub = y - r < 0 ? 0 : y - r, add = y + r + 1 > h - 1 ? h - 1 : y + r + 1;
+            const unsigned char *sa = tmp + ((size_t)add * w + x) * 4;
+            const unsigned char *ss = tmp + ((size_t)sub * w + x) * 4;
+            rr += sa[0] - ss[0]; g += sa[1] - ss[1]; b += sa[2] - ss[2]; a += sa[3] - ss[3];
+        }
+    }
+}
+
+/* The acrylic floor texture: the result point-sampled to ~160px and softened
+ * by six box passes (≈gaussian). Built once per result; the few thousand
+ * reads stay well inside a frame budget. */
+static void bg_build(cui_ctx *ui, job *j) {
+    if (j->bg_tex) { cui_image_destroy(ui, j->bg_tex); j->bg_tex = 0; }
+    j->bg_dirty = false;
+    if (!j->res.rgb || j->res.w < 2 || j->res.h < 2) return;
+    int sw = j->res.w > 160 ? 160 : j->res.w;
+    int sh = (int)((long long)j->res.h * sw / j->res.w);
+    if (sh < 1) sh = 1;
+    unsigned char *px = (unsigned char *)malloc((size_t)sw * sh * 4);
+    unsigned char *tmp = (unsigned char *)malloc((size_t)sw * sh * 4);
+    if (!px || !tmp) { free(px); free(tmp); return; }
+    for (int y = 0; y < sh; y++) {
+        const uint8_t *src = j->res.rgb + ((long long)y * j->res.h / sh) * (size_t)j->res.w * 3;
+        unsigned char *dst = px + (size_t)y * sw * 4;
+        for (int x = 0; x < sw; x++) {
+            const uint8_t *s = src + ((long long)x * j->res.w / sw) * 3;
+            dst[x*4] = s[0]; dst[x*4+1] = s[1]; dst[x*4+2] = s[2]; dst[x*4+3] = 255;
+        }
+    }
+    for (int i = 0; i < 6; i++) bg_box_pass(px, tmp, sw, sh, 4);
+    j->bg_tex = cui_image_create(ui, sw, sh, px);
+    if (j->bg_tex) { j->bg_w = sw; j->bg_h = sh; }
+    free(px); free(tmp);
+}
+
+/* The canvas floor. Acrylic mode (the default) stretches a heavily blurred
+ * copy of the most recent output under a theme-tinted veil — the WinUI mica
+ * idea — and falls back to the solid token colour with a barely-there
+ * checker so transparency is readable (spec: 对比 ≤4%). */
+static void draw_canvas_floor(cui_ctx *ui, app_state *st, job *j, cui_rect r) {
     bool dark = cui_get_theme_mode(ui) == CUI_THEME_DARK;
+    if (st->set.canvas_bg) {
+        job *src = (j && j->res.rgb) ? j : NULL;
+        if (!src) {
+            for (int i = st->count - 1; i >= 0; i--) {
+                if (st->jobs[i].has_result && st->jobs[i].res.rgb) { src = &st->jobs[i]; break; }
+            }
+        }
+        if (src) {
+            if (src->bg_dirty || !src->bg_tex) bg_build(ui, src);
+            if (src->bg_tex) {
+                float ia = (float)src->bg_w / (float)src->bg_h, ra = r.w / r.h;
+                float uw = 1.0f, uh = 1.0f;
+                if (ia > ra) uw = ra / ia; else uh = ia / ra;
+                cui_rect uv = { (1.0f - uw) * 0.5f, (1.0f - uh) * 0.5f, uw, uh };
+                cui_draw_image(ui, src->bg_tex, r, uv, CUI_CORNERS(0), CUI_RGBA(0xffffffff));
+                cui_draw_rect(ui, r, CUI_CORNERS(0),
+                              dark ? CUI_RGBA(0x181818cc) : CUI_RGBA(0xf0f0f0cc));
+                return;
+            }
+        }
+    }
     cui_draw_rect(ui, r, CUI_CORNERS(0), dark ? CUI_RGBA(0x181818ff) : CUI_RGBA(0xE8E8E8ff));
     const float cell = 24.0f;
     cui_color check = dark ? CUI_RGBA(0xffffff08) : CUI_RGBA(0x00000007);
@@ -355,9 +443,9 @@ static void stage_paint(cui_ctx *ui, cui_rect r, void *user) {
         st->stage_valid = true;
     }
 
-    draw_canvas_floor(ui, r);
-
     job *j = job_selected(st);
+    draw_canvas_floor(ui, st, j, r);
+
     if (!j) {
         ui_empty_paint(ui, st, r);
         ui_float_paint(ui, st, r);   /* banner still floats over the empty state */

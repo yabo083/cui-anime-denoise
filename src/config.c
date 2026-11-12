@@ -343,6 +343,7 @@ void cfg_defaults(app_settings *s)
     s->feather_px = 10.0f;
     s->theme_mode = 0;
     s->view_mode = 0;
+    s->canvas_bg = 1;
     s->auto_check_updates = 1;
     s->seen_welcome = 0;
     s->window_w = 1280;
@@ -385,6 +386,7 @@ static void cfg_clamp(app_settings *s)
     clamp_float(&s->feather_px, 0.0f, 150.0f, 8.0f);
     clamp_int(&s->theme_mode, 0, 2);
     clamp_int(&s->view_mode, 0, 2);
+    clamp_int(&s->canvas_bg, 0, 1);
     clamp_int(&s->auto_check_updates, 0, 1);
     clamp_int(&s->seen_welcome, 0, 1);
     clamp_int(&s->window_maximized, 0, 1);
@@ -516,6 +518,7 @@ static void settings_to_json(const app_settings *s, cfg__sb *b)
     cfg__sb_addf(b, "    \"feather_px\": %.6g,\n", (double)s->feather_px);
     cfg__sb_addf(b, "    \"theme_mode\": %d,\n", s->theme_mode);
     cfg__sb_addf(b, "    \"view_mode\": %d,\n", s->view_mode);
+    cfg__sb_addf(b, "    \"canvas_bg\": %d,\n", s->canvas_bg);
     cfg__sb_addf(b, "    \"auto_check_updates\": %d,\n", s->auto_check_updates);
     cfg__sb_addf(b, "    \"seen_welcome\": %d,\n", s->seen_welcome);
     cfg__sb_addf(b, "    \"window_w\": %d,\n", s->window_w);
@@ -818,6 +821,8 @@ static void apply_setting(app_settings *s, const char *key, jtype t,
         j_float(t, num, &s->feather_px);
     } else if (strcmp(key, "theme_mode") == 0) {
         j_int(t, num, &s->theme_mode);
+    } else if (strcmp(key, "canvas_bg") == 0) {
+        j_int(t, num, &s->canvas_bg);
     } else if (strcmp(key, "view_mode") == 0) {
         j_int(t, num, &s->view_mode);
     } else if (strcmp(key, "auto_check_updates") == 0) {

@@ -631,6 +631,7 @@ void app_test_fake_result(app_state *st, int index) {
     j->res_tex = cui_image_create(st->ui, prev.w, prev.h, prev.rgba);
     j->res_w = prev.w;
     j->res_h = prev.h;
+    j->bg_dirty = true;
     img_free(&prev);
     j->has_result = true;
     j->status = JOB_DONE;

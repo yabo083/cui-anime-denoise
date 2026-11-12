@@ -29,6 +29,7 @@ typedef struct app_settings {
     /* ui */
     int theme_mode;          /* 0 system, 1 light, 2 dark */
     int view_mode;           /* 0 compare, 1 original, 2 result */
+    int canvas_bg;           /* 0 solid, 1 acrylic (tinted by the last output) */
     int auto_check_updates;  /* 1 on */
     int seen_welcome;        /* 1 after the first-run wizard */
 
