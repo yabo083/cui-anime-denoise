@@ -303,6 +303,13 @@ static void stage_paint(cui_ctx *ui, cui_rect r, void *user) {
 
     cui_push_clip(ui, r);
 
+    /* one shadow, only under the artwork: it is the only "floating" object */
+    {
+        bool dark = cui_get_theme_mode(ui) == CUI_THEME_DARK;
+        cui_draw_shadow(ui, img, CUI_CORNERS(2.0f), 18.0f, 0.0f, (cui_vec2){ 0.0f, 4.0f },
+                        dark ? CUI_RGBA(0x000000a0) : CUI_RGBA(0x1d1b1826));
+    }
+
     view_mode mode = st->view;
     if (st->peek_orig) mode = VIEW_ORIGINAL;
 

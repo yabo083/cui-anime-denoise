@@ -331,6 +331,11 @@ void ui_sidebar(cui_ctx *ui, app_state *st) {
                 cui_spacer(ui);
                 cui_text(ui, "B 笔刷 · E 橡皮 · L 套索", .size = UI_FS_CAPTION, .color = CUI_COLOR_TEXT_MUTED);
             }
+            /* brush rows only matter while a paint tool is on */
+            if (st->tool == TOOL_VIEW) {
+                cui_text(ui, "在画布工具行选择笔刷 / 橡皮 / 套索后可用。", .size = UI_FS_CAPTION,
+                         .color = CUI_COLOR_TEXT_MUTED);
+            } else {
             float s0 = st->brush_size, m0 = st->brush_mix, f0 = st->feather_px;
             ui_slider_row(ui, "s_brush", "笔刷大小", &st->brush_size, 2.0f, 300.0f, 1.0f, "%.0f px");
             ui_slider_row(ui, "s_mix", "恢复强度", &st->brush_mix, 0.0f, 100.0f, 5.0f, "%.0f%%");
@@ -345,6 +350,7 @@ void ui_sidebar(cui_ctx *ui, app_state *st) {
                 }
             }
             if (fabsf(st->feather_px - f0) > 0.01f) settings_from_state(st);
+            }
         }
 
         cui_separator(ui);
