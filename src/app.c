@@ -574,6 +574,24 @@ void app_test_fake_result(app_state *st, int index) {
     if (index < 0 || index >= st->count) return;
     job *j = &st->jobs[index];
     if (!j->orig.rgba) return;
+    /* A real DN_EV_DONE hands the job RGB pixels at source dimensions; the
+     * composite path reads j->res directly. A fake that only flips
+     * has_result lies, and the first mask stroke trips "合成保护区域失败"
+     * -- so build res as a half-brightness copy of the source. Freed by
+     * eng_image_free on job teardown like any real result. */
+    if (!j->res.rgb) {
+        size_t n = (size_t)j->orig.w * (size_t)j->orig.h;
+        j->res.rgb = (uint8_t *)malloc(n * 3);
+        if (j->res.rgb) {
+            j->res.w = j->orig.w;
+            j->res.h = j->orig.h;
+            for (size_t i = 0; i < n; i++) {
+                j->res.rgb[i * 3 + 0] = (uint8_t)(j->orig.rgba[i * 4 + 0] >> 1);
+                j->res.rgb[i * 3 + 1] = (uint8_t)(j->orig.rgba[i * 4 + 1] >> 1);
+                j->res.rgb[i * 3 + 2] = (uint8_t)(j->orig.rgba[i * 4 + 2] >> 1);
+            }
+        }
+    }
     img_pixels prev = {0};
     if (!img_thumbnail(&j->orig, DISPLAY_MAX, &prev)) return;
     if (j->res_tex) cui_image_destroy(st->ui, j->res_tex);
