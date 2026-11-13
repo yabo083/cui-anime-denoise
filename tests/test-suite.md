@@ -22,6 +22,9 @@
 | I12 | 1 张图 + 假结果 | 按 `X` 两次 | 对比 → 原图 → 结果 | §8 X 互切 |
 | I13 | 同上 + 设置侧栏打开 | 按 2/X/B、点画布分隔线；关栏后再按 2；涂抹中途开栏 | 栏开时键鼠不穿透（view/protect/分隔线不变），点击只关栏；关栏后按键恢复；被中断的笔画完整收尾 | `app_frame` 模态门：`modal_open` 时跳过 `app_handle_keys`/`ui_overlay_input`/`stage_handle_input` 并收拢拖拽态 |
 | I14 | 同上（结果就绪） | 右键画布；菜单开着时按 2；`Esc` 后再按 2；`Ctrl+C` / `Ctrl+Shift+C` | 右键开画布菜单（`ctx_open`）；开着时按键不穿透；Esc 关闭且按键恢复；`Ctrl+C` 写入合成结果（`job_output_px`，含保护合成），`Ctrl+Shift+C` 写入原图——剪贴板回读逐字节校验 | `modal_open` 含 `ctx_open`；保护模式下不弹菜单（右键是临时橡皮手势） |
+| I15 | bench 模型目录（预置 bundled onnx + 骨架，用户目录为空） | 打开设置侧栏 | 模型节渲染：`dn_model_status(ESRGAN)` 就绪、CUGAN/APISR 未下载 | `ui_models_section` 每帧读 status + `dl_*` |
+| I16 | 用户目录放 `.pth`、骨架只在 bundled（分离 pair） | `eng_model_pair_complete` | 分离态 `!available` 且 `missing` 指明不共址（按钮呈「下载」）；补全后 `available`（按钮消失呈「已就绪」），`dn_resolve_model` 返回该模型 | 同目录 pair 不变量（§7.6）；补全=下载的收尾动作 |
+| I17 | CUGAN pair 已就绪 | `app_select_model`；`cfg_load` 回读；`app_delete_model`；把 `set.model` 置成无文件模型 | 不可用模型选择被拒；选中持久化进 settings.json；删除选中模型后 `set.model` 归零；失效选择经 `app_model_sel_broken` 派生警示、`dn_resolve_model` 回退 ESRGAN | 选择是偏好（§7.6）：提交时 resolve，不可用回退不静默 |
 
 ## 启动与线程（需人工或新增场景验证）
 
@@ -66,5 +69,6 @@
 
 ## 回归门
 
-`lab/测试工程` 跑 1000 次迭代后：13 个性能场景 p95 均在预算内、14 项交互断言全 PASS、
-`report/latest/report.md` 存档。
+`lab/测试工程` 跑 1000 次迭代后：14 个性能场景 p95 均在预算内、17 项交互断言全 PASS、
+`report/latest/report.md` 存档。引擎层模型配对/下载语义另由 `tests/test_models.c`
+（无网络，47 断言）与 `tests/test_denoiser.c`（含模型回退）覆盖。

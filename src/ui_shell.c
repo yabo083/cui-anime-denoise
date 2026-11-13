@@ -156,7 +156,9 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
         bool hot = ui_hit(dp, m);
         cui_draw_rect_border(ui, dp, CUI_CORNERS(UI_R_FULL),
                              hot ? fl_hover(ui) : fl_card_bg(ui), fl_border(ui), 1.0f);
-        bool warn = st->device_note[0] != 0;
+        /* warning tint: the device note, or a model selection that cannot
+         * run as stored (derived -- clears itself when the pair returns) */
+        bool warn = st->device_note[0] != 0 || app_model_sel_broken(st);
         cui_color dot = st->engine_ready ? (warn ? cui_token_color(ui, CUI_TOKEN_WARNING)
                                                : cui_token_color(ui, CUI_TOKEN_SUCCESS))
                                          : cui_token_color(ui, CUI_TOKEN_DANGER);
@@ -220,35 +222,6 @@ static void set_theme_mode(cui_ctx *ui, app_state *st, int mode) {
     }
     chrome_set_dark(cui_get_theme_mode(ui) == CUI_THEME_DARK);
     cfg_save(&st->set);
-}
-
-static void ui_model_row(cui_ctx *ui, app_state *st, eng_model m, const char *label) {
-    eng_model_state ms;
-    memset(&ms, 0, sizeof ms);
-    bool known = dn_model_status(m, &ms);
-    cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-        cui_column(ui, .width = CUI_FILL, .gap = 2) {
-            cui_text(ui, label, .font = CUI_FONT_MEDIUM, .size = 12);
-            if (known && ms.available)
-                cui_text(ui, "已就绪", .size = UI_FS_CAPTION, .color = CUI_COLOR_SUCCESS);
-            else if (st->dl_busy[m])
-                cui_text(ui, "正在下载...", .size = UI_FS_CAPTION, .color = CUI_COLOR_ACCENT);
-            else
-                cui_text(ui, "未下载（可选，换用更强的模型）", .size = UI_FS_CAPTION,
-                         .color = CUI_COLOR_TEXT_MUTED);
-        }
-        if (st->dl_busy[m]) {
-            float t = st->dl_total[m] ? (float)st->dl_done[m] / (float)st->dl_total[m] : 0.0f;
-            cui_progress(ui, t, .width = CUI_PX(72), .height = 4);
-        } else if (!known || !ms.available) {
-            if (cui_button(ui, "下载", .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
-                           .icon = CUI_ICON_DOWNLOAD, .disabled = st->bench)) {
-                st->dl_busy[m] = true;
-                st->dl_done[m] = st->dl_total[m] = 0;
-                dn_download_model(m);
-            }
-        }
-    }
 }
 
 static void ui_settings_sheet(cui_ctx *ui, app_state *st) {
@@ -344,10 +317,8 @@ static void ui_settings_sheet(cui_ctx *ui, app_state *st) {
             }
 
             cui_separator(ui);
-            /* 模型管理 */
-            cui_text(ui, "模型管理", .font = CUI_FONT_MEDIUM, .size = 12.5f);
-            ui_model_row(ui, st, ENG_M_CUGAN, "CUGAN");
-            ui_model_row(ui, st, ENG_M_APISR, "APISR");
+            /* 模型: picker + per-model lifecycle (ui_models.c) */
+            ui_models_section(ui, st);
 
             cui_separator(ui);
             /* 更新与维护 */
@@ -402,6 +373,7 @@ static void ui_settings_sheet(cui_ctx *ui, app_state *st) {
                 cfg_defaults(&d);
                 st->set.theme_mode = d.theme_mode;
                 st->set.device = d.device;
+                st->set.model = d.model;
                 st->set.output_dir[0] = 0;
                 st->set.auto_check_updates = d.auto_check_updates;
                 st->preset = DEFAULT_PRESET;

@@ -28,6 +28,7 @@ add_library(anime_core STATIC
     src/ui_stage.c
     src/ui_float.c
     src/ui_lasso.c
+    src/ui_models.c
     src/ui_fluent.c
     src/denoiser.c
     src/denoiser_models.c
