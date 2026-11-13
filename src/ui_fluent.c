@@ -113,11 +113,12 @@ bool ui_hit(cui_rect r, cui_vec2 m) {
 }
 
 /* Icon button: ghost, with the spec's state layers; `on` tints the accent. */
-void ui_iconbtn_draw(cui_ctx *ui, cui_rect r, const char *icon, int state, bool on) {
+void ui_iconbtn_draw(cui_ctx *ui, cui_rect r, const char *icon, int state, bool on,
+                     float radius) {
     if (on)
-        cui_draw_rect(ui, r, CUI_CORNERS(UI_R_MD), cui_alpha(cui_token_color(ui, CUI_TOKEN_ACCENT), 0.16f));
-    if (state == 1) cui_draw_rect(ui, r, CUI_CORNERS(UI_R_MD), fl_hover(ui));
-    else if (state == 2) cui_draw_rect(ui, r, CUI_CORNERS(UI_R_MD), fl_press(ui));
+        cui_draw_rect(ui, r, CUI_CORNERS(radius), cui_alpha(cui_token_color(ui, CUI_TOKEN_ACCENT), 0.16f));
+    if (state == 1) cui_draw_rect(ui, r, CUI_CORNERS(radius), fl_hover(ui));
+    else if (state == 2) cui_draw_rect(ui, r, CUI_CORNERS(radius), fl_press(ui));
     cui_color c = on ? cui_token_color(ui, CUI_TOKEN_ACCENT) : fl_text2(ui);
     cui_draw_icon(ui, icon, r, r.h >= UI_ICONBTN ? UI_ICON_MD : UI_ICON_SM, c);
 }
@@ -125,7 +126,7 @@ void ui_iconbtn_draw(cui_ctx *ui, cui_rect r, const char *icon, int state, bool 
 /* Text button; accent fills the accent role. The content (icon + label)
  * centres inside r; callers normally pass ui_button_w() so r already hugs. */
 void ui_button_draw(cui_ctx *ui, cui_rect r, const char *icon, const char *text,
-                    bool accent, bool disabled, int state) {
+                    bool accent, bool disabled, int state, float radius) {
     cui_color fg = disabled ? fl_text3(ui)
                  : accent   ? cui_token_color(ui, CUI_TOKEN_ACCENT_FOREGROUND)
                             : cui_token_color(ui, CUI_TOKEN_FOREGROUND);
@@ -133,7 +134,7 @@ void ui_button_draw(cui_ctx *ui, cui_rect r, const char *icon, const char *text,
     if (state == 1) bg = accent ? cui_token_color(ui, CUI_TOKEN_ACCENT_STRONG) : fl_hover(ui);
     else if (state == 2) bg = accent ? cui_alpha(cui_token_color(ui, CUI_TOKEN_ACCENT), 0.7f)
                                     : fl_press(ui);
-    cui_draw_rect_border(ui, r, CUI_CORNERS(UI_R_MD), bg,
+    cui_draw_rect_border(ui, r, CUI_CORNERS(radius), bg,
                          accent || disabled ? CUI_TRANSPARENT : fl_border(ui), 1.0f);
     bool has_icon = icon && *icon, has_text = text && *text;
     cui_text_metrics tm = { 0 };
@@ -174,15 +175,18 @@ float ui_seg_w(cui_ctx *ui, const char *const *items, int count) {
  * The thumb springs between segments (spec §6 asks for stiffness 380 /
  * damping 28; CUI's spring is tuned to read the same at this travel). */
 void ui_seg_draw(cui_ctx *ui, cui_rect r, const char *const *items, int count,
-                 int index, cui_id anim_id) {
-    cui_draw_rect_border(ui, r, CUI_CORNERS(UI_R_MD), fl_card_bg(ui), fl_border(ui), 1.0f);
+                 int index, cui_id anim_id, float radius) {
+    cui_draw_rect_border(ui, r, CUI_CORNERS(radius), fl_card_bg(ui), fl_border(ui), 1.0f);
     float iw = r.w / (float)count;
     float thumb_t = cui_animate_spring(ui, anim_id, (float)index, 0.30f, 0.12f);
     if (thumb_t < 0.0f) thumb_t = 0.0f;
     if (thumb_t > (float)(count - 1)) thumb_t = (float)(count - 1);
     cui_rect thumb = { r.x + UI_S4 + (iw - UI_S4) * thumb_t, r.y + UI_S4,
                        iw - UI_S4 * 2.0f, r.h - UI_S4 * 2.0f };
-    cui_draw_rect_border(ui, thumb, CUI_CORNERS(UI_R_MD),
+    float thumb_r = radius - UI_S4;
+    if (thumb_r > thumb.h * 0.5f) thumb_r = thumb.h * 0.5f;
+    if (thumb_r < UI_R_SM) thumb_r = UI_R_SM;
+    cui_draw_rect_border(ui, thumb, CUI_CORNERS(thumb_r),
                          cui_token_color(ui, CUI_TOKEN_SURFACE_RAISED), fl_border(ui), 1.0f);
     for (int i = 0; i < count; i++) {
         cui_font f = i == index ? CUI_FONT_MEDIUM : CUI_FONT_BODY;

@@ -38,10 +38,14 @@ bool ui_hit(cui_rect r, cui_vec2 m);
  * CUI centres its own components on this same box (cui__font_line_height). */
 static inline float fl_font_h(cui_text_metrics m) { return m.ascent - m.descent; }
 
-/* state: 0 idle, 1 hot, 2 pressed. `on` draws the accent-tinted toggle state. */
-void ui_iconbtn_draw(cui_ctx *ui, cui_rect r, const char *icon, int state, bool on);
+/* state: 0 idle, 1 hot, 2 pressed. `on` draws the accent-tinted toggle state.
+ * `radius` follows the concentric rule: controls living inside a capsule
+ * (pill / protect bar / banner) pass UI_R_FULL so their own radius reads as
+ * container_r - padding; controls inside a rounded card keep UI_R_MD. */
+void ui_iconbtn_draw(cui_ctx *ui, cui_rect r, const char *icon, int state, bool on,
+                     float radius);
 void ui_button_draw(cui_ctx *ui, cui_rect r, const char *icon, const char *text,
-                    bool accent, bool disabled, int state);
+                    bool accent, bool disabled, int state, float radius);
 /* Natural widths — the floaters pass these so controls hug their label and
  * container padding stays symmetric; never hand-sum magic widths. The draw
  * calls still centre their content inside whatever rect they get, so a wider
@@ -52,9 +56,10 @@ float ui_button_w(cui_ctx *ui, const char *icon, const char *text);
  * minimum per segment so the hit area stays usable. */
 float ui_seg_w(cui_ctx *ui, const char *const *items, int count);
 /* Segmented control: card track + raised thumb; the thumb springs between
- * segments through cui_animate_spring. Hit with ui_seg_hit(). */
+ * segments through cui_animate_spring. Hit with ui_seg_hit(). `radius` is
+ * the track's corner; the thumb derives radius - inset (concentric). */
 void ui_seg_draw(cui_ctx *ui, cui_rect r, const char *const *items, int count,
-                 int index, cui_id anim_id);
+                 int index, cui_id anim_id, float radius);
 int ui_seg_hit(cui_rect r, int count, float mx);
 /* Slim slider (4px track, 16px thumb, accent fill and grab dot). */
 void ui_slider_draw(cui_ctx *ui, cui_rect r, float value, float lo, float hi,

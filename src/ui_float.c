@@ -85,23 +85,25 @@ static void pill_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
     /* preset segmented */
     cui_rect seg = { x, cy, ui_seg_w(ui, PILL_PRESET, 3), UI_SEG_H };
     ui_seg_draw(ui, seg, PILL_PRESET, 3,
-                st->preset <= 2 ? st->preset : DEFAULT_PRESET, cui_make_id(ui, "seg_preset"));
+                st->preset <= 2 ? st->preset : DEFAULT_PRESET, cui_make_id(ui, "seg_preset"),
+                UI_R_FULL);
     st->r_preset = seg;
     x += seg.w + UI_S8;
 
     if (full) {
         cui_rect vseg = { x, cy, ui_seg_w(ui, PILL_VIEW, 3), UI_SEG_H };
-        ui_seg_draw(ui, vseg, PILL_VIEW, 3, (int)st->view, cui_make_id(ui, "seg_view"));
+        ui_seg_draw(ui, vseg, PILL_VIEW, 3, (int)st->view, cui_make_id(ui, "seg_view"), UI_R_FULL);
         st->r_view = vseg;
         x += vseg.w + UI_S8;
 
         cui_rect b = { x, cy, UI_ICONBTN, UI_ICONBTN };
-        ui_iconbtn_draw(ui, b, CUI_ICON_SLIDERS_HORIZONTAL, btn_state(ui, b), st->tune_open);
+        ui_iconbtn_draw(ui, b, CUI_ICON_SLIDERS_HORIZONTAL, btn_state(ui, b), st->tune_open,
+                        UI_R_FULL);
         st->r_pill_tune = b;
         x += b.w + UI_S4;
 
         b.x = x;
-        ui_iconbtn_draw(ui, b, ICON_BRUSH, btn_state(ui, b), false);
+        ui_iconbtn_draw(ui, b, ICON_BRUSH, btn_state(ui, b), false, UI_R_FULL);
         st->r_pill_brush = b;
         x += b.w + UI_S8;
 
@@ -112,14 +114,15 @@ static void pill_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
         if (tick) cui_request_wakeup(ui, (float)(2.5 - age));
         cui_rect sv = { x, cy, ui_button_w(ui, CUI_ICON_SAVE, "另存为"), UI_SEG_H };
         ui_button_draw(ui, sv, tick ? CUI_ICON_CHECK : CUI_ICON_SAVE,
-                       tick ? "已保存" : "另存为", !tick, false, btn_state(ui, sv));
+                       tick ? "已保存" : "另存为", !tick, false, btn_state(ui, sv), UI_R_FULL);
         if (tick)
             cui_draw_icon(ui, CUI_ICON_CHECK, (cui_rect){ sv.x + 10, sv.y + sv.h * 0.5f - 8, 16, 16 },
                           15.0f, cui_token_color(ui, CUI_TOKEN_SUCCESS));
         st->r_pill_save = sv;
     } else {
         cui_rect ad = { x, cy, ui_button_w(ui, CUI_ICON_PLUS, "添加图片"), UI_SEG_H };
-        ui_button_draw(ui, ad, CUI_ICON_PLUS, "添加图片", false, false, btn_state(ui, ad));
+        ui_button_draw(ui, ad, CUI_ICON_PLUS, "添加图片", false, false, btn_state(ui, ad),
+                       UI_R_FULL);
         st->r_pill_add = ad;
     }
 
@@ -198,7 +201,7 @@ static void tray_paint(cui_ctx *ui, app_state *st, cui_rect stage) {
 
     if (paged) {
         cui_rect pv = { x, tr.y + (UI_TRAY_H - 24.0f) * 0.5f, TRAY_PAGE_BTN, 24.0f };
-        ui_iconbtn_draw(ui, pv, CUI_ICON_CHEVRON_LEFT, btn_state(ui, pv), false);
+        ui_iconbtn_draw(ui, pv, CUI_ICON_CHEVRON_LEFT, btn_state(ui, pv), false, UI_R_MD);
         st->r_tray_prev = pv;
         x += TRAY_PAGE_BTN + UI_S4;
     }
@@ -266,7 +269,7 @@ static void tray_paint(cui_ctx *ui, app_state *st, cui_rect stage) {
     if (paged) {
         cui_rect nx = { x + UI_TILE + UI_S4, tr.y + (UI_TRAY_H - 24.0f) * 0.5f,
                         TRAY_PAGE_BTN, 24.0f };
-        ui_iconbtn_draw(ui, nx, CUI_ICON_CHEVRON_RIGHT, btn_state(ui, nx), false);
+        ui_iconbtn_draw(ui, nx, CUI_ICON_CHEVRON_RIGHT, btn_state(ui, nx), false, UI_R_MD);
         st->r_tray_next = nx;
     }
     cui_pop_clip(ui);
@@ -289,7 +292,8 @@ static float protect_lay(cui_ctx *ui, app_state *st, job *j, cui_rect pr, bool p
     for (int i = 0; i < 3; i++) {
         cui_rect b = { x, cy, UI_ICONBTN, UI_ICONBTN };
         if (paint) {
-            ui_iconbtn_draw(ui, b, PTOOL_ICON[i], btn_state(ui, b), st->tool == (tool_mode)(i + 1));
+            ui_iconbtn_draw(ui, b, PTOOL_ICON[i], btn_state(ui, b), st->tool == (tool_mode)(i + 1),
+                            UI_R_FULL);
             st->r_tool[i] = b;
         }
         x += UI_ICONBTN + UI_S4;
@@ -338,9 +342,9 @@ static float protect_lay(cui_ctx *ui, app_state *st, job *j, cui_rect pr, bool p
         cui_rect b = { x, cyc, UI_ICONBTN_SM, UI_ICONBTN_SM };
         if (paint) {
             int s = small[i].disabled ? 0 : btn_state(ui, b);
-            ui_iconbtn_draw(ui, b, small[i].icon, s, small[i].on);
+            ui_iconbtn_draw(ui, b, small[i].icon, s, small[i].on, UI_R_FULL);
             if (small[i].disabled)
-                cui_draw_rect(ui, b, CUI_CORNERS(UI_R_MD), CUI_RGBA(fl_dark(ui) ? 0x00000040 : 0xFFFFFF66));
+                cui_draw_rect(ui, b, CUI_CORNERS(UI_R_FULL), CUI_RGBA(fl_dark(ui) ? 0x00000040 : 0xFFFFFF66));
             *small[i].r = b;
         }
         x += UI_ICONBTN_SM + UI_S4;
@@ -351,23 +355,24 @@ static float protect_lay(cui_ctx *ui, app_state *st, job *j, cui_rect pr, bool p
     /* 未保护结果 toggle */
     cui_rect up = { x, cyc, ui_button_w(ui, NULL, "未保护"), UI_ICONBTN_SM };
     if (paint) {
-        ui_button_draw(ui, up, NULL, "未保护", false, !j->has_result, btn_state(ui, up));
+        ui_button_draw(ui, up, NULL, "未保护", false, !j->has_result, btn_state(ui, up),
+                       UI_R_FULL);
         if (st->view_unprotected)
-            cui_draw_rect_border(ui, up, CUI_CORNERS(UI_R_MD), CUI_TRANSPARENT, accent(ui), 1.5f);
+            cui_draw_rect_border(ui, up, CUI_CORNERS(UI_R_FULL), CUI_TRANSPARENT, accent(ui), 1.5f);
         st->r_punprot = up;
     }
     x += up.w + UI_S8;
 
     cui_rect cc = { x, cyc, ui_button_w(ui, NULL, "取消"), UI_ICONBTN_SM };
     if (paint) {
-        ui_button_draw(ui, cc, NULL, "取消", false, false, btn_state(ui, cc));
+        ui_button_draw(ui, cc, NULL, "取消", false, false, btn_state(ui, cc), UI_R_FULL);
         st->r_pcancel = cc;
     }
     x += cc.w + UI_S4;
 
     cui_rect dn = { x, cyc, ui_button_w(ui, NULL, "完成"), UI_ICONBTN_SM };
     if (paint) {
-        ui_button_draw(ui, dn, NULL, "完成", true, false, btn_state(ui, dn));
+        ui_button_draw(ui, dn, NULL, "完成", true, false, btn_state(ui, dn), UI_R_FULL);
         st->r_pdone = dn;
     }
     return x + dn.w;
@@ -464,7 +469,7 @@ static void tune_paint(cui_ctx *ui, app_state *st, cui_rect stage) {
 
     float rsw = ui_button_w(ui, CUI_ICON_ROTATE_CCW, "重置");
     cui_rect rs = { cr.x + cr.w - UI_S16 - rsw, y - 4.0f, rsw, 24.0f };
-    ui_button_draw(ui, rs, CUI_ICON_ROTATE_CCW, "重置", false, false, btn_state(ui, rs));
+    ui_button_draw(ui, rs, CUI_ICON_ROTATE_CCW, "重置", false, false, btn_state(ui, rs), UI_R_MD);
     st->r_tune_reset = rs;
     cui_pop_clip(ui);
 }
@@ -514,7 +519,8 @@ static void banner_paint(cui_ctx *ui, app_state *st, cui_rect stage) {
     x += text_w + 8.0f;
     if (err) {
         cui_rect rb = { x, br.y + (UI_BANNER_H - UI_ICONBTN_SM) * 0.5f, bw, UI_ICONBTN_SM };
-        ui_button_draw(ui, rb, CUI_ICON_REFRESH_CW, "重试", false, false, btn_state(ui, rb));
+        ui_button_draw(ui, rb, CUI_ICON_REFRESH_CW, "重试", false, false, btn_state(ui, rb),
+                       UI_R_FULL);
         st->r_banner_retry = rb;
     }
     cui_pop_clip(ui);
@@ -544,7 +550,8 @@ void ui_empty_paint(cui_ctx *ui, app_state *st, cui_rect r) {
 
     float bw = ui_button_w(ui, CUI_ICON_FOLDER_OPEN, "浏览文件…");
     cui_rect br = { cx - bw * 0.5f, cr.y + 148, bw, 30.0f };
-    ui_button_draw(ui, br, CUI_ICON_FOLDER_OPEN, "浏览文件…", true, false, btn_state(ui, br));
+    ui_button_draw(ui, br, CUI_ICON_FOLDER_OPEN, "浏览文件…", true, false, btn_state(ui, br),
+                   UI_R_MD);
 }
 
 /* ------------------------------------------------------------------------ */

@@ -119,7 +119,7 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
     {
         cui_vec2 m = cui_mouse_pos(ui);
         int s = ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
-        ui_iconbtn_draw(ui, ib, CUI_ICON_SETTINGS, s, st->show_settings);
+        ui_iconbtn_draw(ui, ib, CUI_ICON_SETTINGS, s, st->show_settings, UI_R_MD);
     }
     ZONE(ib); rx = ib.x - UI_S4;
     ib.x = rx - UI_ICONBTN_SM;
@@ -127,7 +127,7 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
     {
         cui_vec2 m = cui_mouse_pos(ui);
         int s = ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
-        ui_iconbtn_draw(ui, ib, CUI_ICON_CIRCLE_HELP, s, st->show_help);
+        ui_iconbtn_draw(ui, ib, CUI_ICON_CIRCLE_HELP, s, st->show_help, UI_R_MD);
     }
     ZONE(ib); rx = ib.x - UI_S4;
 
@@ -139,7 +139,7 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
         st->r_title_update = ib;
         cui_vec2 m = cui_mouse_pos(ui);
         int s = ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
-        ui_iconbtn_draw(ui, ib, CUI_ICON_DOWNLOAD, s, false);
+        ui_iconbtn_draw(ui, ib, CUI_ICON_DOWNLOAD, s, false, UI_R_MD);
         if (st->upd.state != UPD_DOWNLOADING)
             cui_draw_circle(ui, (cui_vec2){ ib.x + ib.w - 5.0f, ib.y + 5.0f }, 3.0f,
                             cui_token_color(ui, CUI_TOKEN_ACCENT));
