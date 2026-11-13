@@ -564,6 +564,10 @@ void rebuild_mask_texture(app_state *st, job *j) {
  * submit time by out_paths) is where the result is encoded, with the source
  * alpha re-applied and the source ICC profile written into the PNG. */
 void job_apply_done(cui_ctx *ui, app_state *st, job *j, dn_event *ev) {
+    /* a re-run lands here with the previous result still owned (job_rerun
+     * keeps has_result); release it before the new pixels or the old
+     * full-res buffer -- tens of MB on a big image -- leaks per run */
+    eng_image_free(&j->res);
     j->res = ev->rgb;                  /* ownership moves to the job */
     memset(&ev->rgb, 0, sizeof ev->rgb);
     j->has_result = true;
