@@ -1,6 +1,9 @@
-/* denoiser.c -- the in-process inference worker. See denoiser.h for the API;
- * this file owns the engine lifetime, the job/event rings, the two-entry SR
- * cache and the idle session release.
+/* denoiser.c -- the in-process inference worker's thread core. See
+ * denoiser.h for the public API; this file owns the engine lifetime, the
+ * job/event rings, the two-entry SR cache and the idle session release.
+ * Model management (status queries, selection resolution, deletion and the
+ * download job) is split into denoiser_models.c; both files share the
+ * internals declared in denoiser_int.h.
  *
  * Threading: one background thread at THREAD_PRIORITY_BELOW_NORMAL owns the
  * eng * (engine calls are thread-compatible, not thread-safe). The UI thread
@@ -15,81 +18,26 @@
  */
 #define _CRT_SECURE_NO_WARNINGS 1
 
-#include "denoiser.h"
+#include "denoiser_int.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
-#define DN_QUEUE_CAP         8      /* the app serializes jobs anyway */
-#define DN_EVENT_CAP         96     /* ~1.6 s of progress chatter at 60 fps */
-#define DN_SR_CACHE          2      /* worker's LRU, minus one */
-#define DN_IDLE_RELEASE_MS   60000  /* quiet period before sessions release */
-#define DN_JOIN_MS           8000   /* bounded by one tile / one L0 step */
-#define DN_DIR_CAP           520
-
-typedef enum {
-    DN_JOB_DENOISE = 1,
-    DN_JOB_SET_DEVICE,
-    DN_JOB_DOWNLOAD
-} dn_job_kind;
-
-typedef struct {
-    int kind;
-    int id;
-    int src_key;
-    int down_pct;
-    double l0;
-    eng_image src;        /* RGB8, copied and alpha-stripped at push */
-    eng_device device;    /* SET_DEVICE */
-    eng_model model;      /* DOWNLOAD */
-    volatile long cancel;
-} dn_job;
-
-/* LRU-2 SR cache: index 0 is the most recently used entry. */
+/* LRU-2 SR cache: index 0 is the most recently used entry. The model is part
+ * of the key: the same source at the same down_pct is a different result on
+ * a different graph, so a stale entry must never masquerade as the current
+ * model's output. */
 typedef struct {
     int src_key;
     int down_pct;
+    eng_model model;
     eng_image im;
 } dn_sr_entry;
 
-static struct {
-    CRITICAL_SECTION lock;
-    CONDITION_VARIABLE cv;
-    int lock_ready;
-    int alive;
-    int stop;
-    HANDLE thread;
+dn_shared g_dn;
 
-    dn_state state;             /* set on the dn thread, read via accessors */
-    char last_error[512];
-    char device_name[160];
-    int using_gpu;
-    eng_device pref;
-
-    dn_job jobs[DN_QUEUE_CAP];
-    int jobs_head, jobs_count;
-    dn_job *running;            /* slot the thread is executing (cancel target) */
-
-    dn_event events[DN_EVENT_CAP];
-    int ev_head, ev_count;
-
-    wchar_t runtime_dir[DN_DIR_CAP];
-    wchar_t models_dir[DN_DIR_CAP];
-    wchar_t user_models_dir[DN_DIR_CAP];
-    char user_models_dir_u8[DN_DIR_CAP];
-    int dirs_ready;
-} g_dn;
-
-static void dn__lock(void) {
+void dn__lock(void) {
     if (!g_dn.lock_ready) {
         InitializeCriticalSection(&g_dn.lock);
         InitializeConditionVariable(&g_dn.cv);
@@ -97,14 +45,14 @@ static void dn__lock(void) {
     }
     EnterCriticalSection(&g_dn.lock);
 }
-static void dn__unlock(void) { LeaveCriticalSection(&g_dn.lock); }
+void dn__unlock(void) { LeaveCriticalSection(&g_dn.lock); }
 
 /* ---------------------------------------------------------------- events */
 
 /* The ring never blocks the engine: a full ring can only be backed-up
  * progress chatter, so the oldest PROGRESS event is dropped to make room.
  * Terminal events always land; the pathological overflow drops the new one. */
-static void dn__post(dn_event *ev) {
+void dn__post(dn_event *ev) {
     dn__lock();
     if (g_dn.ev_count >= DN_EVENT_CAP &&
         g_dn.events[g_dn.ev_head].type == DN_EV_PROGRESS) {
@@ -132,7 +80,7 @@ static void dn__post_progress(int id, const char *stage, float value) {
     dn__post(&ev);
 }
 
-static void dn__post_terminal(int type, int id, const char *message) {
+void dn__post_terminal(int type, int id, const char *message) {
     dn_event ev;
     memset(&ev, 0, sizeof ev);
     ev.type = type;
@@ -202,7 +150,7 @@ static void env_to_wide(const char *env, wchar_t *out, size_t cap) {
  * variables (DN_RUNTIME_DIR / DN_MODELS_DIR / DN_USER_MODELS_DIR, UTF-8)
  * override the defaults; they exist for tests, which run away from the
  * staged <exe>\runtime + <exe>\models layout. */
-static void dn__resolve_dirs(void) {
+void dn__resolve_dirs(void) {
     wchar_t exe[DN_DIR_CAP];
     wchar_t tmp[DN_DIR_CAP];
     wchar_t data[DN_DIR_CAP];
@@ -247,10 +195,13 @@ static void dn__resolve_dirs(void) {
 
 /* -------------------------------------------------------------- SR cache */
 
-static int cache_find(dn_sr_entry c[DN_SR_CACHE], int src_key, int down_pct) {
-    if (c[0].im.rgb && c[0].src_key == src_key && c[0].down_pct == down_pct)
+static int cache_find(dn_sr_entry c[DN_SR_CACHE], int src_key, int down_pct,
+                      eng_model model) {
+    if (c[0].im.rgb && c[0].src_key == src_key && c[0].down_pct == down_pct &&
+        c[0].model == model)
         return 1;
-    if (c[1].im.rgb && c[1].src_key == src_key && c[1].down_pct == down_pct) {
+    if (c[1].im.rgb && c[1].src_key == src_key && c[1].down_pct == down_pct &&
+        c[1].model == model) {
         dn_sr_entry t = c[0];
         c[0] = c[1];           /* promote the hit to MRU */
         c[1] = t;
@@ -260,11 +211,12 @@ static int cache_find(dn_sr_entry c[DN_SR_CACHE], int src_key, int down_pct) {
 }
 
 static void cache_put(dn_sr_entry c[DN_SR_CACHE], int src_key, int down_pct,
-                      eng_image im) {
+                      eng_model model, eng_image im) {
     eng_image_free(&c[1].im);  /* evict the least recently used */
     c[1] = c[0];
     c[0].src_key = src_key;
     c[0].down_pct = down_pct;
+    c[0].model = model;
     c[0].im = im;
 }
 
@@ -330,17 +282,30 @@ static void run_denoise(eng *e, dn_job *job, dn_sr_entry cache[DN_SR_CACHE]) {
         dn__post_terminal(DN_EV_ERROR, job->id, "推理引擎未就绪。");
         return;
     }
+    /* The requested model only runs when its files still form a complete
+     * pair; anything else resolves to the bundled ESRGAN and the DONE event
+     * carries the fallback note. Preparing is per-model and cached, so a
+     * model switch needs no engine restart -- the first job on a new model
+     * just pays its session compile inside the job itself. */
+    eng_model m = dn_resolve_model(job->model);
+    int fell_back = m != job->model;
     /* sessions may have been released by the idle timer; eng_prepare is a
      * no-op when the model is still compiled */
-    if (!eng_prepare(e, ENG_M_ESRGAN, err, sizeof err)) {
-        dn__post_terminal(DN_EV_ERROR, job->id,
-                          err[0] ? err : "模型编译失败。");
-        return;
+    if (!eng_prepare(e, m, err, sizeof err)) {
+        /* the pair passed the file check but would not load (corrupt .pth,
+         * stale skeleton): same fallback, never a silent wrong-model run */
+        if (m == ENG_M_ESRGAN || !eng_prepare(e, ENG_M_ESRGAN, err, sizeof err)) {
+            dn__post_terminal(DN_EV_ERROR, job->id,
+                              err[0] ? err : "模型编译失败。");
+            return;
+        }
+        m = ENG_M_ESRGAN;
+        fell_back = 1;
     }
 
     eng_image *sr;
     int sr_cached;
-    if (cache_find(cache, job->src_key, job->down_pct)) {
+    if (cache_find(cache, job->src_key, job->down_pct, m)) {
         sr = &cache[0].im;
         sr_cached = 1;
         /* the band's upscale leg is already spent; land the bar where a
@@ -351,7 +316,7 @@ static void run_denoise(eng *e, dn_job *job, dn_sr_entry cache[DN_SR_CACHE]) {
         eng_image out = {0, 0, NULL};
         eng_params p;
         memset(&p, 0, sizeof p);
-        p.model = ENG_M_ESRGAN;
+        p.model = m;
         p.down = job->down_pct / 100.0;
         int r = eng_upscale(e, &job->src, &p, &out, dn__progress, &prog,
                             (volatile long *)&job->cancel, err, sizeof err);
@@ -366,7 +331,7 @@ static void run_denoise(eng *e, dn_job *job, dn_sr_entry cache[DN_SR_CACHE]) {
                               err[0] ? err : "超分失败。");
             return;
         }
-        cache_put(cache, job->src_key, job->down_pct, out);
+        cache_put(cache, job->src_key, job->down_pct, m, out);
         sr = &cache[0].im;
         sr_cached = 0;
     }
@@ -410,39 +375,13 @@ static void run_denoise(eng *e, dn_job *job, dn_sr_entry cache[DN_SR_CACHE]) {
         ev.rgb = result;                       /* ownership moves */
         ev.ms = (int)((t1.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart);
         ev.sr_cached = sr_cached != 0;
+        ev.model = (int)m;
+        if (fell_back) {
+            snprintf(ev.message, sizeof ev.message, "%s",
+                     "所选模型不可用，已改用内置模型。");
+        }
         dn__post(&ev);
     }
-}
-
-static void dl_progress(void *ud, unsigned long long done,
-                        unsigned long long total) {
-    dn_job *job = (dn_job *)ud;
-    dn_event ev;
-    memset(&ev, 0, sizeof ev);
-    ev.type = DN_EV_DL_PROGRESS;
-    ev.id = (int)job->model;
-    ev.dl_done = done;
-    ev.dl_total = total;
-    dn__post(&ev);
-}
-
-static void run_download(dn_job *job) {
-    char err[256];
-    dn_event ev;
-    err[0] = 0;
-    int r = eng_model_download(job->model, g_dn.user_models_dir,
-                               dl_progress, job,
-                               (volatile long *)&job->cancel, err, sizeof err);
-    memset(&ev, 0, sizeof ev);
-    ev.id = (int)job->model;
-    if (r == 0) {
-        ev.type = DN_EV_DL_DONE;
-    } else {
-        ev.type = DN_EV_DL_ERROR;
-        snprintf(ev.message, sizeof ev.message, "%s",
-                 r == 1 ? "下载已取消。" : (err[0] ? err : "模型下载失败。"));
-    }
-    dn__post(&ev);
 }
 
 /* Engine bring-up, on the dn thread only. One READY event either way:
@@ -541,7 +480,7 @@ static DWORD WINAPI dn_main(void *arg) {
             e = dn__boot(&cfg);
             break;
         case DN_JOB_DOWNLOAD:
-            run_download(job);
+            dn__run_download(job);
             break;
         default:
             break;
@@ -660,19 +599,14 @@ const char *dn_last_error(void) { return g_dn.last_error; }
 const char *dn_device_name(void) { return g_dn.device_name; }
 bool dn_using_gpu(void) { return g_dn.using_gpu != 0; }
 eng_device dn_get_device(void) { return g_dn.pref; }
-const char *dn_models_dir(void) {
-    dn__lock();
-    dn__resolve_dirs();
-    dn__unlock();
-    return g_dn.user_models_dir_u8;
-}
 
 bool dn_push_denoise(int id, int src_key, const img_pixels *src,
-                     int down_pct, double l0) {
+                     int down_pct, double l0, eng_model model) {
     uint8_t *rgb;
     size_t n;
     if (!src || !src->rgba || src->w <= 0 || src->h <= 0) return false;
     if (down_pct < 1 || down_pct > 100 || !(l0 >= 0.0)) return false;
+    if (model < ENG_M_ESRGAN || model > ENG_M_APISR) return false;
     n = (size_t)src->w * (size_t)src->h;
     if (n > (SIZE_MAX / 3)) return false;
     rgb = (uint8_t *)malloc(n * 3);
@@ -702,6 +636,7 @@ bool dn_push_denoise(int id, int src_key, const img_pixels *src,
         job->src_key = src_key;
         job->down_pct = down_pct;
         job->l0 = l0;
+        job->model = model;
         job->src.w = src->w;
         job->src.h = src->h;
         job->src.rgb = rgb;
@@ -745,36 +680,6 @@ void dn_set_device(eng_device dev) {
     if (queued) WakeConditionVariable(&g_dn.cv);
 }
 
-void dn_download_model(eng_model m) {
-    int queued = 0;
-    dn__lock();
-    if (g_dn.alive && g_dn.jobs_count < DN_QUEUE_CAP) {
-        int slot = (g_dn.jobs_head + g_dn.jobs_count) % DN_QUEUE_CAP;
-        dn_job *job = &g_dn.jobs[slot];
-        memset(job, 0, sizeof *job);
-        job->kind = DN_JOB_DOWNLOAD;
-        job->model = m;
-        g_dn.jobs_count++;
-        queued = 1;
-    }
-    dn__unlock();
-    if (queued) {
-        WakeConditionVariable(&g_dn.cv);
-    } else {
-        dn__post_terminal(DN_EV_DL_ERROR, (int)m, "推理引擎未运行。");
-    }
-}
-
-bool dn_model_status(eng_model m, eng_model_state *out) {
-    eng_config cfg;
-    if (!out) return false;
-    dn__lock();
-    dn__resolve_dirs();
-    memset(&cfg, 0, sizeof cfg);
-    cfg.runtime_dir = g_dn.runtime_dir;
-    cfg.models_dir = g_dn.models_dir;
-    cfg.user_models_dir = g_dn.user_models_dir;
-    dn__unlock();
-    eng_model_status(&cfg, m, out);
-    return true;
-}
+/* The model-management public surface -- dn_models_dir, dn_model_status,
+ * dn_resolve_model, dn_delete_model, dn_download_model plus the worker-side
+ * dn__run_download -- lives in denoiser_models.c. */

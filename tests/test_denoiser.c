@@ -14,11 +14,13 @@
  *     New-Item -ItemType Directory -Force tmp\dnbuild | Out-Null;
  *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c tests\test_denoiser.c /Fo:tmp\dnbuild\;
  *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c src\denoiser.c /Fo:tmp\dnbuild\;
+ *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c src\denoiser_models.c /Fo:tmp\dnbuild\;
  *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c src\update_io.c /Fo:tmp\dnbuild\;
  *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c src\update.c /Fo:tmp\dnbuild\;
  *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c src\config.c /Fo:tmp\dnbuild\;
  *     cl /nologo /utf-8 /W4 /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /I src /c src\log.c /Fo:tmp\dnbuild\;
  *     link /nologo tmp\dnbuild\test_denoiser.obj tmp\dnbuild\denoiser.obj
+ *       tmp\dnbuild\denoiser_models.obj
  *       tmp\dnbuild\update_io.obj tmp\dnbuild\update.obj
  *       tmp\dnbuild\config.obj tmp\dnbuild\log.obj
  *       build\anime_engine.lib build\third_party\CUI\cui.lib
@@ -124,7 +126,7 @@ int main(void) {
 
     /* ---- job 1: full pipeline, no cache --------------------------------- */
     make_rgba(&px, 32, 32, 5);
-    CHECK(dn_push_denoise(11, 1001, &px, 50, 0.0), "push job 11");
+    CHECK(dn_push_denoise(11, 1001, &px, 50, 0.0, ENG_M_ESRGAN), "push job 11");
     memset(&w, 0, sizeof w);
     CHECK(wait_for(DN_EV_DONE, 11, &ev, &w, 60000), "job 11 DONE");
     CHECK(w.progress_n > 0, "job 11 emitted progress");
@@ -132,11 +134,14 @@ int main(void) {
     CHECK(ev.rgb.rgb && ev.rgb.w == 32 && ev.rgb.h == 32,
           "DONE carries full-res RGB at source size");
     CHECK(ev.sr_cached == false, "first run is not a cache hit");
+    CHECK(ev.model == ENG_M_ESRGAN, "DONE reports the model that ran");
+    CHECK(ev.message[0] == 0, "bundled model needs no fallback note");
     done1_w = ev.rgb.w; done1_h = ev.rgb.h;
     dn_event_free(&ev);
 
     /* ---- job 2: same src_key+down_pct, different l0 -> SR cache hit ----- */
-    CHECK(dn_push_denoise(12, 1001, &px, 50, 0.0004), "push job 12");
+    CHECK(dn_push_denoise(12, 1001, &px, 50, 0.0004, ENG_M_ESRGAN),
+          "push job 12");
     memset(&w, 0, sizeof w);
     CHECK(wait_for(DN_EV_DONE, 12, &ev, &w, 60000), "job 12 DONE");
     CHECK(ev.sr_cached == true, "same src_key+down reuses the SR pass");
@@ -151,8 +156,10 @@ int main(void) {
         img_pixels big;
         int got3 = 0, got4 = 0, type3 = 0, type4 = 0;
         make_rgba(&big, 96, 96, 9);
-        CHECK(dn_push_denoise(13, 2002, &big, 100, 0.0), "push job 13 (running)");
-        CHECK(dn_push_denoise(14, 3003, &big, 100, 0.0), "push job 14 (queued)");
+        CHECK(dn_push_denoise(13, 2002, &big, 100, 0.0, ENG_M_ESRGAN),
+              "push job 13 (running)");
+        CHECK(dn_push_denoise(14, 3003, &big, 100, 0.0, ENG_M_ESRGAN),
+              "push job 14 (queued)");
         dn_cancel(14);
         /* job 13 runs to DONE or gets cancelled by shutdown; job 14 must be
          * CANCELLED -- its flag was set before the thread ever saw it */
@@ -178,12 +185,32 @@ int main(void) {
         free(big.rgba);
     }
 
+    /* ---- model selection: unavailable picks fall back to the bundled ----- */
+    /* DN_USER_MODELS_DIR points at an empty dir, so CUGAN is not a complete
+     * pair here: the resolver must answer ESRGAN, and a job pushed on CUGAN
+     * must come back DONE on ESRGAN with the fallback note -- never a
+     * silent wrong-model run. */
+    CHECK(dn_resolve_model(ENG_M_CUGAN) == ENG_M_ESRGAN,
+          "undownloaded model resolves to the bundled one");
+    CHECK(dn_resolve_model(ENG_M_ESRGAN) == ENG_M_ESRGAN,
+          "bundled model resolves to itself");
+    CHECK(dn_push_denoise(15, 1001, &px, 50, 0.0, ENG_M_CUGAN),
+          "push job 15 on an unavailable model");
+    memset(&w, 0, sizeof w);
+    CHECK(wait_for(DN_EV_DONE, 15, &ev, &w, 60000), "job 15 DONE");
+    CHECK(ev.model == ENG_M_ESRGAN, "job 15 ran on the bundled fallback");
+    CHECK(ev.message[0] != 0, "job 15 DONE carries the fallback note");
+    dn_event_free(&ev);
+
     /* ---- model status is a synchronous file check ------------------------ */
     {
         eng_model_state ms;
         memset(&ms, 0, sizeof ms);
         CHECK(dn_model_status(ENG_M_ESRGAN, &ms), "model_status runs");
         CHECK(ms.available, "bundled ESRGAN reports available");
+        memset(&ms, 0, sizeof ms);
+        dn_model_status(ENG_M_CUGAN, &ms);
+        CHECK(!ms.available, "absent CUGAN pair reports unavailable");
     }
 
     /* ---- shutdown is prompt and leaves state IDLE ------------------------ */

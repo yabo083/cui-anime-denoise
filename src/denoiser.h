@@ -29,7 +29,8 @@ extern "C" {
 enum {
     DN_EV_NONE = 0,
     DN_EV_PROGRESS,     /* id, stage ("decode"/"upscale"/"smooth"), value     */
-    DN_EV_DONE,         /* id, rgb (owned by the receiver), ms, sr_cached     */
+    DN_EV_DONE,         /* id, rgb, ms, sr_cached, model; message when the
+                           requested model fell back to the bundled one      */
     DN_EV_ERROR,        /* id, message; id == 0 means engine-level            */
     DN_EV_CANCELLED,    /* id handled                                         */
     DN_EV_READY,        /* ready_ok, device, using_gpu, note -> message       */
@@ -43,10 +44,12 @@ typedef struct dn_event {
     int id;
     char stage[24];
     float value;                  /* progress, already in the UI band */
-    char message[512];            /* error text; READY: eng_note()    */
+    char message[512];            /* error text; READY: eng_note(); DONE:
+                                     non-empty when the model fell back     */
     eng_image rgb;                /* DONE only; owned by the receiver */
     int ms;                       /* DONE: engine-side elapsed        */
     bool sr_cached;               /* DONE: SR step came from the cache */
+    int model;                    /* DONE: eng_model that produced the result */
     int ready_ok;                 /* READY: 1 prepared, 0 failed      */
     char device[160];             /* READY: eng_device_name()         */
     bool using_gpu;               /* READY: eng_using_gpu()           */
@@ -92,14 +95,17 @@ bool dn_using_gpu(void);
 const char *dn_models_dir(void);     /* user models dir, UTF-8 */
 eng_device dn_get_device(void);
 
-/* Queues a denoise job. `src_key` is the caller's stable identity for the
- * source image: together with down_pct it keys the two-entry SR cache, so a
- * re-run that only changed l0 skips the super-resolution pass entirely.
+/* Queues a denoise job on model `model` (ENG_M_ESRGAN/CUGAN/APISR). `src_key`
+ * is the caller's stable identity for the source image: together with
+ * down_pct and the resolved model it keys the two-entry SR cache, so a re-run
+ * that only changed l0 skips the super-resolution pass entirely.
  * The RGBA pixels are copied (alpha stripped) before the call returns.
  * down_pct is 10..100, l0 >= 0. Answers DN_EV_DONE / DN_EV_ERROR /
- * DN_EV_CANCELLED. */
+ * DN_EV_CANCELLED. If the requested model's files are not a complete pair
+ * at run time, the job falls back to the bundled ESRGAN and the DONE event
+ * carries the fallback note in `message`. */
 bool dn_push_denoise(int id, int src_key, const img_pixels *src,
-                     int down_pct, double l0);
+                     int down_pct, double l0, eng_model model);
 
 /* Sets the job's cancel flag; the engine unwinds at the next tile / L0
  * iteration and the job answers DN_EV_CANCELLED. Unknown ids are ignored. */
@@ -112,8 +118,14 @@ void dn_set_device(eng_device dev);
 
 /* Model management for the settings surface: status is a synchronous file
  * check (no engine needed); downloads are queued on the denoiser thread and
- * answered with DN_EV_DL_*. */
+ * answered with DN_EV_DL_*. dn_resolve_model is the selection semantic the
+ * engine applies per job: the requested model when its pair is complete,
+ * else the bundled ESRGAN. dn_delete_model removes a downloaded pair from
+ * the user models dir (synchronous, files only -- already-prepared sessions
+ * are unaffected until released). */
 bool dn_model_status(eng_model m, eng_model_state *out);
+eng_model dn_resolve_model(eng_model want);
+bool dn_delete_model(eng_model m);
 void dn_download_model(eng_model m);
 
 /* Pops one queued event (1) or returns 0. DONE ownership moves to the
