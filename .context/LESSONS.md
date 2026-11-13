@@ -177,3 +177,26 @@ HarmonyOS 子集 cmap 里。跑 `gen_assets --check` 才发现，同时报出
 **修法**：渲染文本改用字体已有的 `·`；注释退回纯 ASCII。
 **教训**：给源码加非 ASCII 字符前先跑 `gen_assets --check`——
 门把注释当渲染文本管，写注释也只能用字体/ASCII 覆盖的字。
+
+## L-020 CUI popup 的"存活期"比 open 标志长一拍
+
+**现象**：I14 断言 `Esc 关菜单 → 按 2 恢复` 失败——Esc 已把
+`p->open` 置 false，但 `cui__popup_begin` 在退出弹簧（SPRING_EXIT
+0.16s ≈ 10 帧）沉降前一直返回 true，`ctx_open` 随之保持，门没撤，
+后面的 Ctrl+C 全被门挡住。
+**修法**：断言里 `pump(2)` 改 `pump(20)`；`ctx_open` 语义定义成
+"surface 还在"（含淡出），门控按这个语义走是对的。
+**教训**：`popup_begin` 返回值 ≠ open，是"仍在构建/动画中"。凡拿它
+当门控或断言条件的，都要把退出动画算进时间预算。
+
+## L-021 锚定整幅画布的 context menu 会被锚宽撑爆
+
+**现象**：`cui_context_menu` 绑在 stage canvas 上，菜单横向拉满整个窗口——
+`cui__popup_begin` 对 `width<=0` 的 popup 取 `min_w = anchor 宽度`，
+本意是给 select 下拉对齐触发器宽，而 context menu 锚是全幅画布。
+**修法**：vendored CUI 补一行：`at_mouse` 的 popup 不吃锚宽 floor
+（只有 `cui_context_menu_begin` 置 `p->at_mouse`，select/menubar
+行为不变）。
+**教训**：改 vendored 库前先把参数的真实语义查清——`menu` 形参在这里
+是"菜单式条目导航"，不是"右键菜单"；select 也传 menu=true 且需要
+锚宽，按 menu 一刀切会回归下拉框。
