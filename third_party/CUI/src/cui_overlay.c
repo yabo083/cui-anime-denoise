@@ -116,7 +116,9 @@ bool cui__popup_begin(cui_ctx *ui, cui_id id, cui_id anchor, int placement, floa
     n->gap = gap;
     n->flags |= CUI_NF_HIT_OPAQUE;
     if (width > 0) n->w = CUI_PX(width);
-    else if (anchor && cui__has_prev_rect(ui, anchor)) n->min_w = cui__prev_rect(ui, anchor).w;
+    /* at-mouse popups (context menus) have no meaningful "anchor width": bound
+     * to a full-size canvas the floor would stretch the menu across the window */
+    else if (anchor && !p->at_mouse && cui__has_prev_rect(ui, anchor)) n->min_w = cui__prev_rect(ui, anchor).w;
     n->min_w = CUI_MAX(n->min_w, menu ? 180.0f : 0.0f);
     n->max_h = 420;
     n->opacity = t;
