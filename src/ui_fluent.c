@@ -181,7 +181,10 @@ void ui_seg_draw(cui_ctx *ui, cui_rect r, const char *const *items, int count,
     float thumb_t = cui_animate_spring(ui, anim_id, (float)index, 0.30f, 0.12f);
     if (thumb_t < 0.0f) thumb_t = 0.0f;
     if (thumb_t > (float)(count - 1)) thumb_t = (float)(count - 1);
-    cui_rect thumb = { r.x + UI_S4 + (iw - UI_S4) * thumb_t, r.y + UI_S4,
+    /* thumb travels in iw steps inside the track's inset, not (iw - inset):
+     * the old pitch left i=1 short by 4px and i=2 by 8px -- the selected
+     * thumb visibly drifted off its label's slot at the right end. */
+    cui_rect thumb = { r.x + UI_S4 + iw * thumb_t, r.y + UI_S4,
                        iw - UI_S4 * 2.0f, r.h - UI_S4 * 2.0f };
     float thumb_r = radius - UI_S4;
     if (thumb_r > thumb.h * 0.5f) thumb_r = thumb.h * 0.5f;
