@@ -472,6 +472,54 @@ static void test_composite(void)
     free(orig.rgba);
 }
 
+/* Regression: IWICBitmapScaler is allowed to change the pixel format and on
+ * current Windows the Fant/Cubic/Linear modes report -- and emit -- BGRA.
+ * img_resize must hand RGBA to callers regardless; a flat asymmetric colour
+ * catches both a channel swap (R<->B) and accidental premultiplication. */
+static void test_resize_channels(void)
+{
+    printf("resize channel order\n");
+    enum { SW = 300, SH = 200 };
+    img_pixels src = { NULL, 0, 0 };
+    src.w = SW;
+    src.h = SH;
+    src.rgba = (uint8_t *)malloc((size_t)SW * SH * 4u);
+    for (int y = 0; y < SH; y++) {
+        for (int x = 0; x < SW; x++) {
+            uint8_t *p = src.rgba + ((size_t)y * SW + x) * 4u;
+            if (x < SW / 2) { p[0] = 200; p[1] = 40; p[2] = 10; }  /* left red  */
+            else            { p[0] = 10;  p[1] = 40; p[2] = 200; } /* right blue */
+            p[3] = y < SH / 2 ? 255 : 128;                          /* bottom semi-alpha */
+        }
+    }
+
+    img_pixels out = { NULL, 0, 0 };
+    check(img_resize(&src, 100, 66, &out), "img_resize succeeded");
+    if (out.rgba) {
+        const uint8_t *L = out.rgba + ((size_t)(out.h / 4) * out.w + out.w / 4) * 4u;
+        const uint8_t *R = out.rgba + ((size_t)(out.h / 4) * out.w + 3 * out.w / 4) * 4u;
+        const uint8_t *B = out.rgba + ((size_t)(3 * out.h / 4) * out.w + out.w / 2) * 4u;
+        check(L[0] > 150 && L[2] < 80, "resize keeps R in byte 0 (left red)");
+        check(R[0] < 80 && R[2] > 150, "resize keeps B in byte 2 (right blue)");
+        check(B[3] > 100 && B[3] < 160, "resize preserves alpha without premultiplying");
+        check(B[0] < 150, "semi-alpha pixel is not premultiplied");
+        img_free(&out);
+    }
+
+    /* same guarantee through img_thumbnail's scaler branch (src > max_side) */
+    img_pixels th = { NULL, 0, 0 };
+    check(img_thumbnail(&src, 128, &th), "img_thumbnail(128) succeeded");
+    if (th.rgba) {
+        const uint8_t *L = th.rgba + ((size_t)(th.h / 2) * th.w + th.w / 4) * 4u;
+        const uint8_t *R = th.rgba + ((size_t)(th.h / 2) * th.w + 3 * th.w / 4) * 4u;
+        check(L[0] > 150 && L[2] < 80, "thumbnail keeps R in byte 0");
+        check(R[0] < 80 && R[2] > 150, "thumbnail keeps B in byte 2");
+        img_free(&th);
+    }
+
+    free(src.rgba);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -485,6 +533,7 @@ int main(void)
     test_clipboard();
     test_clipboard_dib();
     test_composite();
+    test_resize_channels();
     test_failures();
 
     img_shutdown();

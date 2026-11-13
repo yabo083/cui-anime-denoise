@@ -33,6 +33,15 @@
   分段控件每段=最宽标签+双侧 12px 内边距（单段下限 48px）；pill 与
   保护工具条的容器宽=子控件实测宽之和，不再出现固定常量撑出的
   右侧死区。滑杆轨道与数值区仍定宽——拖数值时整条工具条不应抖动。
+- 大图（长边 > 2560）预览整体偏色（蓝↔红互换）：`IWICBitmapScaler`
+  允许改变输出像素格式——Fant/Cubic/Linear 模式经 `GetPixelFormat`
+  如实报告输出 BGRA，`img_resize` 却未校验格式直接 `CopyPixels`，
+  把 BGRA 当 RGBA 交给纹理。落盘文件正确（编码路径不经缩放器），
+  ≤2560 的图也正常（`img_thumbnail` 走 memcpy 直拷），故该问题只在
+  大图预览出现。修复：缩放器输出经 `IWICFormatConverter` 钉回 RGBA
+  （与 `img_decode` 同款手法），converter 不可用时按 `GetPixelFormat`
+  报告手动交换兜底。波及面：原图显示、结果预览、胶片条缩略图
+  （>128px 的图都反）、剪贴板导入缩放——一处处同根同愈。
 
 ## [1.1.4]
 

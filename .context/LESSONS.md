@@ -215,3 +215,23 @@ HarmonyOS 子集 cmap 里。跑 `gen_assets --check` 才发现，同时报出
 (ascent−descent)×size，公开 API 里没有等价助手，自绘代码要
 自带这条约定。HarmonyOS 时代同样存在，Noto 的字框/行高差更大
 才暴露。
+
+## L-023 IWICBitmapSource.CopyPixels 之前必须钉死输出格式
+
+**现象**：4081×5488 大图去噪完成后预览整体偏色（蓝↔红互换），
+落盘 PNG 却完全正确；≤2560 的图预览也正常。
+**根因**：`IWICBitmapScaler` 允许改变像素格式——Fant/Cubic/Linear
+的 `GetPixelFormat` 如实报告 32bppBGRA（HQCubic 则报告 RGBA），
+`img_resize` 没有校验输出格式直接 CopyPixels，BGRA 字节被当
+RGBA 建纹理。小图走 `img_thumbnail` 的 memcpy 直拷分支躲过了
+缩放器，所以只有大图显形；128px 胶片条缩略图其实全尺寸都反，
+只是噪音纹理里没人察觉。
+**修法**：缩放器输出套 `IWICFormatConverter`→32bppRGBA（与
+img_decode 相同手法），converter 失败时按 GetPixelFormat 报告
+做手动 R↔B 交换兜底。
+**教训**：任何 `IWICBitmapSource`（Scaler/ColorTransform/Clipper/
+FlipRotator…）都可能改变像素格式，CopyPixels 前要么 GetPixelFormat
+校验，要么套 FormatConverter 钉格式——"CreateBitmapFromMemory
+声明了 RGBA"只约束输入，不约束输出。回归测试：tests/test_img.c
+的 test_resize_channels（非对称色块+半透明行，swap 和
+premultiply 两种坏法都能抓）。

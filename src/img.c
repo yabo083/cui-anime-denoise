@@ -994,6 +994,7 @@ bool img_resize(const img_pixels *src, int w, int h, img_pixels *out)
 {
     IWICBitmap *bitmap = NULL;
     IWICBitmapScaler *scaler = NULL;
+    IWICFormatConverter *conv = NULL;
     img_pixels px = { NULL, 0, 0 };
     bool ok = false;
 
@@ -1025,9 +1026,40 @@ bool img_resize(const img_pixels *src, int w, int h, img_pixels *out)
                                             WICBitmapInterpolationModeCubic);
         }
         if (SUCCEEDED(hr) && img__pixels_alloc(w, h, &px)) {
+            /* IWICBitmapScaler may change the pixel format: Fant, Cubic and
+             * Linear hand back BGRA (GetPixelFormat says so honestly), while
+             * HighQualityCubic keeps the source's RGBA. Never CopyPixels from
+             * a bitmap source without pinning the format first -- run the
+             * output through a format converter, same as img_decode does. */
+            IWICBitmapSource *final = NULL;
+            bool swap_rb = false;
+            if (SUCCEEDED(g_factory->lpVtbl->CreateFormatConverter(g_factory, &conv)) && conv &&
+                SUCCEEDED(conv->lpVtbl->Initialize(conv, (IWICBitmapSource *)scaler,
+                                                   &GUID_WICPixelFormat32bppRGBA,
+                                                   WICBitmapDitherTypeNone, NULL, 0.0,
+                                                   WICBitmapPaletteTypeCustom))) {
+                final = (IWICBitmapSource *)conv;
+            } else {
+                GUID fmt = GUID_WICPixelFormatUndefined;
+                if (SUCCEEDED(scaler->lpVtbl->GetPixelFormat(scaler, &fmt))) {
+                    if (IsEqualGUID(&fmt, &GUID_WICPixelFormat32bppBGRA)) {
+                        swap_rb = true;
+                        final = (IWICBitmapSource *)scaler;
+                    } else if (IsEqualGUID(&fmt, &GUID_WICPixelFormat32bppRGBA)) {
+                        final = (IWICBitmapSource *)scaler;
+                    }
+                }
+            }
             UINT out_stride = (UINT)w * 4u;
-            if (SUCCEEDED(scaler->lpVtbl->CopyPixels(scaler, NULL, out_stride,
-                                                     out_stride * (UINT)h, px.rgba))) {
+            if (final && SUCCEEDED(final->lpVtbl->CopyPixels(final, NULL, out_stride,
+                                                             out_stride * (UINT)h, px.rgba))) {
+                if (swap_rb) {
+                    for (size_t i = 0, n = (size_t)w * (size_t)h; i < n; i++) {
+                        uint8_t t = px.rgba[i * 4 + 0];
+                        px.rgba[i * 4 + 0] = px.rgba[i * 4 + 2];
+                        px.rgba[i * 4 + 2] = t;
+                    }
+                }
                 *out = px;
                 ok = true;
             } else {
@@ -1036,6 +1068,7 @@ bool img_resize(const img_pixels *src, int w, int h, img_pixels *out)
         }
     }
 
+    if (conv) conv->lpVtbl->Release(conv);
     if (scaler) scaler->lpVtbl->Release(scaler);
     bitmap->lpVtbl->Release(bitmap);
     return ok;
