@@ -417,8 +417,7 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
      * itself (Esc or a click outside), so our own Esc peeling stays off too.
      * The canvas context menu counts too: it is a CUI popup, but our manual
      * stage input does not know about CUI's popup layer without this gate. */
-    bool modal_open = st->show_settings || st->show_help || st->ctx_open ||
-                      st->show_about   || st->show_update;
+    bool modal_open = app_modal_open(st);
     app_handle_drops(ui, st);
     if (!modal_open) {
         app_handle_keys(ui, st);

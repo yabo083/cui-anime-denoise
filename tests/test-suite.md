@@ -25,6 +25,7 @@
 | I15 | bench 模型目录（预置 bundled onnx + 骨架，用户目录为空） | 打开设置侧栏 | 模型节渲染：`dn_model_status(ESRGAN)` 就绪、CUGAN/APISR 未下载 | `ui_models_section` 每帧读 status + `dl_*` |
 | I16 | 用户目录放 `.pth`、骨架只在 bundled（分离 pair） | `eng_model_pair_complete` | 分离态 `!available` 且 `missing` 指明不共址（按钮呈「下载」）；补全后 `available`（按钮消失呈「已就绪」），`dn_resolve_model` 返回该模型 | 同目录 pair 不变量（§7.6）；补全=下载的收尾动作 |
 | I17 | CUGAN pair 已就绪 | `app_select_model`；`cfg_load` 回读；`app_delete_model`；把 `set.model` 置成无文件模型 | 不可用模型选择被拒；选中持久化进 settings.json；删除选中模型后 `set.model` 归零；失效选择经 `app_model_sel_broken` 派生警示、`dn_resolve_model` 回退 ESRGAN | 选择是偏好（§7.6）：提交时 resolve，不可用回退不静默 |
+| I18 | 设置侧栏打开 | 点击 `r_close` 中心；侧栏消失后再点同一像素 | 第一次：sheet 被 scrim 点击关闭但 `want_quit` 不置位（标题栏整条惰性）；第二次：`want_quit` 置位（按钮不死） | `app_modal_open` 门控 `ui_titlebar_input` + `titlebar_paint` 的 `ui_hit` 读取；sheet 的 × 与 `r_close` 存在 ~20×12px 角部重叠，裸跑会把关窗穿透成 `chrome_close()` |
 
 ## 启动与线程（需人工或新增场景验证）
 

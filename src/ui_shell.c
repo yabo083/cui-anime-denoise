@@ -40,10 +40,12 @@ static cui_color text1(cui_ctx *ui) { return cui_token_color(ui, CUI_TOKEN_FOREG
 
 typedef struct title_ctx { app_state *st; } title_ctx;
 
-/* One caption button: state layer on hover, Fluent red for close. */
-static void caption_draw(cui_ctx *ui, cui_rect r, const char *icon, bool is_close) {
+/* One caption button: state layer on hover, Fluent red for close. `inert`
+ * is set while a modal owns input -- the scrim is translucent, so a live
+ * hover read would glow through it on controls that cannot be clicked. */
+static void caption_draw(cui_ctx *ui, cui_rect r, const char *icon, bool is_close, bool inert) {
     cui_vec2 m = cui_mouse_pos(ui);
-    int s = ui_hit(r, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
+    int s = !inert && ui_hit(r, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
     if (s && is_close) {
         cui_draw_rect(ui, r, CUI_CORNERS(0),
                       s == 2 ? CUI_RGBA(0xA52F1Bff) : CUI_RGBA(0xC42B1Cff));
@@ -59,6 +61,7 @@ static void caption_draw(cui_ctx *ui, cui_rect r, const char *icon, bool is_clos
 static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
     app_state *st = ((title_ctx *)user)->st;
     job *j = job_selected(st);
+    bool inert = app_modal_open(st);
 
     cui_draw_rect(ui, r, CUI_CORNERS(0), cui_token_color(ui, CUI_TOKEN_BACKGROUND));
     cui_draw_rect(ui, (cui_rect){ r.x, r.y + r.h - 1.0f, r.w, 1.0f }, CUI_CORNERS(0),
@@ -86,7 +89,7 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
     if (j) {
         cui_text_metrics fn = cui_measure_text(ui, CUI_FONT_BODY, UI_FS_CAPTION, j->name, -1);
         cui_rect link = { x - 6.0f, cy - 12.0f, fn.width + 12.0f, 24.0f };
-        bool hot = ui_hit(link, cui_mouse_pos(ui));
+        bool hot = !inert && ui_hit(link, cui_mouse_pos(ui));
         if (hot) cui_draw_rect(ui, link, CUI_CORNERS(UI_R_MD), fl_hover(ui));
         cui_draw_text(ui, CUI_FONT_BODY, UI_FS_CAPTION,
                       (cui_vec2){ x, cy - fl_font_h(fn) * 0.5f },
@@ -107,10 +110,10 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
     st->r_max   = (cui_rect){ cx0 + UI_CAPTION_W,        r.y, UI_CAPTION_W, UI_TITLEBAR };
     st->r_min   = (cui_rect){ cx0,                        r.y, UI_CAPTION_W, UI_TITLEBAR };
     ZONE(st->r_min); ZONE(st->r_max); ZONE(st->r_close);
-    caption_draw(ui, st->r_min, CUI_ICON_MINUS, false);
+    caption_draw(ui, st->r_min, CUI_ICON_MINUS, false, inert);
     caption_draw(ui, st->r_max,
-                 chrome_is_maximized() ? ICON_MINIMIZE : ICON_MAXIMIZE, false);
-    caption_draw(ui, st->r_close, CUI_ICON_X, true);
+                 chrome_is_maximized() ? ICON_MINIMIZE : ICON_MAXIMIZE, false, inert);
+    caption_draw(ui, st->r_close, CUI_ICON_X, true, inert);
 
     float rx = cx0 - UI_S8;
     /* settings + help icon buttons (28x28) */
@@ -118,7 +121,7 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
     st->r_title_settings = ib;
     {
         cui_vec2 m = cui_mouse_pos(ui);
-        int s = ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
+        int s = !inert && ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
         ui_iconbtn_draw(ui, ib, CUI_ICON_SETTINGS, s, st->show_settings, UI_R_MD);
     }
     ZONE(ib); rx = ib.x - UI_S4;
@@ -126,7 +129,7 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
     st->r_title_help = ib;
     {
         cui_vec2 m = cui_mouse_pos(ui);
-        int s = ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
+        int s = !inert && ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
         ui_iconbtn_draw(ui, ib, CUI_ICON_CIRCLE_HELP, s, st->show_help, UI_R_MD);
     }
     ZONE(ib); rx = ib.x - UI_S4;
@@ -138,7 +141,7 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
         ib.x = rx - UI_ICONBTN_SM;
         st->r_title_update = ib;
         cui_vec2 m = cui_mouse_pos(ui);
-        int s = ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
+        int s = !inert && ui_hit(ib, m) ? (cui_mouse_down(ui, CUI_MOUSE_LEFT) ? 2 : 1) : 0;
         ui_iconbtn_draw(ui, ib, CUI_ICON_DOWNLOAD, s, false, UI_R_MD);
         if (st->upd.state != UPD_DOWNLOADING)
             cui_draw_circle(ui, (cui_vec2){ ib.x + ib.w - 5.0f, ib.y + 5.0f }, 3.0f,
@@ -153,7 +156,7 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
         float pw = dm.width + 30.0f;
         cui_rect dp = { rx - pw - UI_S4, cy - 12.0f, pw, 24.0f };
         cui_vec2 m = cui_mouse_pos(ui);
-        bool hot = ui_hit(dp, m);
+        bool hot = !inert && ui_hit(dp, m);
         cui_draw_rect_border(ui, dp, CUI_CORNERS(UI_R_FULL),
                              hot ? fl_hover(ui) : fl_card_bg(ui), fl_border(ui), 1.0f);
         /* warning tint: the device note, or a model selection that cannot
@@ -184,12 +187,17 @@ void ui_titlebar(cui_ctx *ui, app_state *st) {
 }
 
 /* Reads last frame's title-bar hit rects; runs before the stage's own input
- * so a click on chrome never reaches the canvas. */
+ * so a click on chrome never reaches the canvas. A modal owns input: the
+ * settings sheet's panel sits on top of this strip, and its own × overlaps
+ * r_close -- letting the click through would fire chrome_close() on a sheet
+ * dismissal. The press-edge tracker still runs so the opening press cannot
+ * leak into the first click after the modal closes. */
 void ui_titlebar_input(app_state *st) {
     cui_ctx *ui = st->ui;
     cui_vec2 m = cui_mouse_pos(ui);
-    if (!tb_pressed(ui)) return;
-    if (ui_hit(st->r_close, m)) { chrome_close(); return; }
+    bool pressed = tb_pressed(ui);
+    if (app_modal_open(st) || !pressed) return;
+    if (ui_hit(st->r_close, m)) { st->want_quit = true; return; }
     if (ui_hit(st->r_max, m)) { chrome_toggle_maximize(); return; }
     if (ui_hit(st->r_min, m)) { chrome_minimize(); return; }
     if (ui_hit(st->r_title_settings, m)) { st->show_settings = true; return; }

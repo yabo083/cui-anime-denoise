@@ -278,6 +278,16 @@ void app_shutdown(cui_ctx *ui, app_state *st);
 /* True when the app wants to quit (window close, Ctrl+Q, or the update flow). */
 bool app_quit_requested(const app_state *st);
 
+/* A modal surface (settings sheet, help/about/update dialogs, the canvas
+ * context menu) owns input: every hand-rolled hit test must honour it, not
+ * just the stage -- the title bar's caption buttons sit under the sheet's
+ * panel and a click on the sheet's own × would otherwise fall through to
+ * chrome_close(). */
+static inline bool app_modal_open(const app_state *st) {
+    return st->show_settings || st->show_help || st->ctx_open ||
+           st->show_about || st->show_update;
+}
+
 /* Test hooks: index of the selected job and a snapshot of the job list. */
 int app_job_count(const app_state *st);
 const job *app_job_at(const app_state *st, int index);

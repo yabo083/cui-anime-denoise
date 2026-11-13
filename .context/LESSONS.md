@@ -269,3 +269,19 @@ id 栈种子)`。两个同名按钮在同一种子下得到**同一个 id** → 
 就是这么隔离同组 radio 的）。
 **教训**：循环里渲染同名控件（删除/下载/编辑这类通用动作标签）必须
 先推 id 作用域；排查"控件灵异联动"先查 id 撞车再查几何重叠。
+
+## L-026 自绘命中层必须全部过 modal 门控——漏一处就是穿透
+
+**现象**：点设置 sheet 的 × 关抽屉时主窗口的 × 也有反应（sheet × 与
+`r_close` 角部重叠 ~20×12px，点击同帧触发 `chrome_close()`）。
+**根因**：I13 的 modal 门控只挡住了 stage/overlay/keys 的输入；
+`ui_titlebar_input` 在门控之前无条件运行，标题栏的所有 `ui_hit`
+hover 读取也都是 modal 盲的。手画命中层不会自动知道 CUI 的弹层。
+**修法**：`app_modal_open(st)` 提成 app.h 共享 helper；`ui_titlebar_input`
+门控（edge tracker 照喂，防开 modal 的按下留毒）；`titlebar_paint`
+7 处 `ui_hit` 读取加 `!inert`。退出路径顺手从 `chrome_close()`
+（PostMessage WM_CLOSE，headless 下不可观察）统一到 `want_quit`
+（两条路都汇进 `app_shutdown`，bench 可断言）。
+**教训**：① 每加一条手画命中/热区路径，先问"modal 开着时它该不该
+活"——逐处漏一处就是穿透；② 给 bench 留断言要选可观察的退出
+语义（`want_quit` 标志）而不是 Win32 副作用（PostMessage）。
