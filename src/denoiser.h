@@ -81,8 +81,11 @@ bool dn_start(eng_device dev);
 
 /* Shutdown + start: the retry path for DN_STATE_FAILED and device changes
  * that need a clean engine. Joins the old thread first -- cancel is signalled
- * to any running job, so the wait is bounded by one tile. */
-void dn_restart(eng_device dev);
+ * to any running job, so the wait is bounded by one tile. Returns false when
+ * the old worker outlived its join window and still owns the rings (a slow
+ * download chunk can do that): last_error says so and a later retry works
+ * once the orphan's epilogue lands. */
+bool dn_restart(eng_device dev);
 
 /* Stops the thread (cancels the running job) and joins it. Safe before start
  * and after a failure. */

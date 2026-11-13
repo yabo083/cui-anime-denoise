@@ -362,18 +362,21 @@ void engine_start_now(app_state *st) {
     str_copy(st->boot_stage, sizeof st->boot_stage, "加载推理引擎");
     st->boot_deadline = now_seconds() + 60.0;
     st->engine_error[0] = 0;
-    if (dn_state_get() == DN_STATE_IDLE) {
-        if (!dn_start(device_pref(st))) {
-            st->booting = false;
-            const char *err = dn_last_error();
-            str_copy(st->engine_error, sizeof st->engine_error,
-                     (err && *err) ? err : "无法启动推理引擎。");
-            str_copy(st->device, sizeof st->device, "模型未就绪");
-            log_error("denoiser start failed: %s", st->engine_error);
-            return;
-        }
-    } else {
-        dn_restart(device_pref(st));
+    /* dn_restart joins the old worker first; a slow download chunk can hold
+     * it past the join window, and dn_start then fails honestly ("still
+     * stopping") instead of faking readiness -- the retry path works once
+     * the orphan's epilogue lands. */
+    bool started = dn_state_get() == DN_STATE_IDLE
+                       ? dn_start(device_pref(st))
+                       : dn_restart(device_pref(st));
+    if (!started) {
+        st->booting = false;
+        const char *err = dn_last_error();
+        str_copy(st->engine_error, sizeof st->engine_error,
+                 (err && *err) ? err : "无法启动推理引擎。");
+        str_copy(st->device, sizeof st->device, "模型未就绪");
+        log_error("denoiser start failed: %s", st->engine_error);
+        return;
     }
     str_copy(st->device, sizeof st->device, "正在启动…");
 }

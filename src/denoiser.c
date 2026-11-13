@@ -520,8 +520,17 @@ bool dn_start(eng_device dev) {
     HANDLE t;
     dn__lock();
     if (g_dn.alive) {
+        /* stop==1 marks a worker orphaned by a join timeout: it still owns
+         * the rings and will clear alive in its epilogue. Reporting "already
+         * up" here spawned nothing and left the caller waiting on a READY
+         * that never came -- fail honestly so the retry path can fire once
+         * the thread has actually landed. */
+        int dying = g_dn.stop != 0;
+        if (dying)
+            snprintf(g_dn.last_error, sizeof g_dn.last_error,
+                     "引擎还在停止中，请稍后重试。");
         dn__unlock();
-        return true;   /* already up (READY or FAILED): use dn_restart */
+        return !dying;   /* healthy: already up; dying: restart later */
     }
     g_dn.stop = 0;
     g_dn.state = DN_STATE_BOOT;
@@ -550,9 +559,9 @@ bool dn_start(eng_device dev) {
     return true;
 }
 
-void dn_restart(eng_device dev) {
+bool dn_restart(eng_device dev) {
     dn_shutdown();
-    dn_start(dev);
+    return dn_start(dev);
 }
 
 void dn_shutdown(void) {
