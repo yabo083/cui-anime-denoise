@@ -258,13 +258,16 @@ void app_do_copy(app_state *st, bool original) {
     if (!j) { toast(st, "还没有图片"); return; }
     img_pixels px = {0};
     const img_pixels *src = NULL;
-    if (!original && j->has_result) {
+    if (!original) {
+        /* Ctrl+C with no result must not quietly fall back to the source --
+         * the user asked for the result and would paste the wrong image */
+        if (!j->has_result) { toast(st, "还没有可以复制的结果"); return; }
         src = job_output_px(j, &px);
         if (!src) { toast(st, "复制失败：无法合成结果"); return; }
-    } else if (j->orig.rgba) {
+    } else {
+        if (!j->orig.rgba) { toast(st, "还没有可以复制的图片"); return; }
         src = &j->orig;
     }
-    if (!src) { toast(st, "还没有可以复制的结果"); return; }
     toast(st, img_clipboard_set(src)
               ? (original ? "已复制原图到剪贴板" : "已复制结果到剪贴板")
               : "无法写入剪贴板");
