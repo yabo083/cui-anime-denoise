@@ -119,6 +119,8 @@ void app_handle_keys(cui_ctx *ui, app_state *st) {
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_O)) st->want_browse = true;
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_Q)) st->want_quit = true;
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_V)) st->want_paste = true;
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_C)) app_do_copy(st, false);
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY | CUI_MOD_SHIFT, CUI_KEY_C)) app_do_copy(st, true);
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_S) ||
         cui_shortcut(ui, CUI_MOD_PRIMARY | CUI_MOD_SHIFT, CUI_KEY_S))
         st->want_save = true;
@@ -246,6 +248,27 @@ void app_do_paste(app_state *st) {
     if (!ok) { toast(st, "无法保存粘贴的图片"); return; }
     toast(st, "已粘贴剪贴板图片");
     enqueue_path(st, path);
+}
+
+/* Puts the image on the system clipboard (CF_DIBV5 + PNG via img_clipboard_set).
+ * original=false copies what 另存为 would produce — the mask-composited result;
+ * with no result yet there is nothing to copy (the caller greys the menu item). */
+void app_do_copy(app_state *st, bool original) {
+    job *j = job_selected(st);
+    if (!j) { toast(st, "还没有图片"); return; }
+    img_pixels px = {0};
+    const img_pixels *src = NULL;
+    if (!original && j->has_result) {
+        src = job_output_px(j, &px);
+        if (!src) { toast(st, "复制失败：无法合成结果"); return; }
+    } else if (j->orig.rgba) {
+        src = &j->orig;
+    }
+    if (!src) { toast(st, "还没有可以复制的结果"); return; }
+    toast(st, img_clipboard_set(src)
+              ? (original ? "已复制原图到剪贴板" : "已复制结果到剪贴板")
+              : "无法写入剪贴板");
+    img_free(&px);
 }
 
 /* Expands st->set.save_name into a dialog default. Tokens: {app} the product

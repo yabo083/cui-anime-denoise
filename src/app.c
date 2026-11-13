@@ -414,8 +414,10 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
 
     /* A modal surface owns input: the canvas, the floats and the shortcuts
      * must not see clicks and keys meant for it. CUI closes the topmost modal
-     * itself (Esc or a click outside), so our own Esc peeling stays off too. */
-    bool modal_open = st->show_settings || st->show_help ||
+     * itself (Esc or a click outside), so our own Esc peeling stays off too.
+     * The canvas context menu counts too: it is a CUI popup, but our manual
+     * stage input does not know about CUI's popup layer without this gate. */
+    bool modal_open = st->show_settings || st->show_help || st->ctx_open ||
                       st->show_about   || st->show_update;
     app_handle_drops(ui, st);
     if (!modal_open) {

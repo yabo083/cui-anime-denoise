@@ -465,6 +465,8 @@ static img_pixels *job_composite_px(job *j, img_pixels *out) {
     return ok ? out : NULL;
 }
 
+img_pixels *job_output_px(job *j, img_pixels *out) { return job_composite_px(j, out); }
+
 static void job_res_texture(cui_ctx *ui, job *j, const img_pixels *px) {
     img_pixels prev = {0};
     if (!img_thumbnail(px, DISPLAY_MAX, &prev)) return;

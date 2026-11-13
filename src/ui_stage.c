@@ -633,6 +633,50 @@ static void stage_paint(cui_ctx *ui, cui_rect r, void *user) {
     ui_float_paint(ui, st, r);
 }
 
+/* Right-click menu on the canvas, anchored to the stage node by emission order.
+ * Skipped in protect mode: the right button is the temporary-eraser gesture
+ * there, and a menu under the brush would fight it. Items mirror the global
+ * shortcuts in app_handle_keys — same flags, same behaviour. */
+static void stage_context_menu(cui_ctx *ui, app_state *st) {
+    st->ctx_open = false;
+    if (st->protect) return;
+    job *j = job_selected(st);
+    bool has_res = j && j->has_result;
+    st->ctx_open = cui_context_menu_begin(ui, "stage-ctx");
+    if (!st->ctx_open) return;
+    if (cui_menu_item(ui, "复制结果", .icon = CUI_ICON_COPY, .shortcut = "Ctrl+C",
+                      .disabled = !has_res))
+        app_do_copy(st, false);
+    if (cui_menu_item(ui, "复制原图", .icon = CUI_ICON_IMAGE, .shortcut = "Ctrl+Shift+C",
+                      .disabled = !j))
+        app_do_copy(st, true);
+    if (cui_menu_item(ui, "粘贴图片", .icon = CUI_ICON_CLIPBOARD, .shortcut = "Ctrl+V"))
+        st->want_paste = true;
+    cui_menu_separator(ui);
+    if (cui_menu_item(ui, "打开图片…", .icon = CUI_ICON_FOLDER_OPEN, .shortcut = "Ctrl+O"))
+        st->want_browse = true;
+    if (cui_menu_item(ui, "另存为…", .icon = CUI_ICON_SAVE, .shortcut = "Ctrl+S",
+                      .disabled = !has_res))
+        st->want_save = true;
+    cui_menu_separator(ui);
+    if (cui_menu_item(ui, "适合窗口", .icon = CUI_ICON_MAXIMIZE_2, .shortcut = "F",
+                      .disabled = !j))
+        stage_fit(j, st->stage);
+    if (cui_menu_item(ui, "实际大小 1:1", .icon = CUI_ICON_ZOOM_IN, .shortcut = "0",
+                      .disabled = !j)) {
+        j->view.zoom = 1.0f;
+        j->view.cx = stage_image_w(j) * 0.5f;
+        j->view.cy = stage_image_h(j) * 0.5f;
+        j->view_fitted = false;
+    }
+    cui_menu_separator(ui);
+    if (cui_menu_item(ui, "设置…", .icon = CUI_ICON_SETTINGS))
+        st->show_settings = true;
+    if (cui_menu_item(ui, "帮助与快捷键", .icon = CUI_ICON_CIRCLE_HELP, .shortcut = "F1"))
+        st->show_help = true;
+    cui_context_menu_end(ui);
+}
+
 void draw_stage_area(cui_ctx *ui, app_state *st, float height) {
     (void)height;
     stage_ctx sc = { st };
@@ -641,4 +685,5 @@ void draw_stage_area(cui_ctx *ui, app_state *st, float height) {
         st->stage = res.rect;
         st->stage_valid = true;
     }
+    stage_context_menu(ui, st);
 }

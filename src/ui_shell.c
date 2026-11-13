@@ -470,6 +470,7 @@ static void ui_help_dialog(cui_ctx *ui, app_state *st) {
     cui_dialog(ui, "帮助与快捷键", &open, .width = 560) {
         cui_column(ui, .width = CUI_FILL, .gap = 6) {
             shortcut_row(ui, "Ctrl O / Ctrl V", "添加图片 / 粘贴剪贴板");
+            shortcut_row(ui, "Ctrl C / Ctrl Shift C", "复制结果 / 复制原图");
             shortcut_row(ui, "Ctrl S", "另存为");
             shortcut_row(ui, "Ctrl Z / Ctrl Shift Z", "撤销 / 重做笔刷");
             shortcut_row(ui, "1 / 2 / 3 / X", "对比 / 原图 / 结果，X 互切");

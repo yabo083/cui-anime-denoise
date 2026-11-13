@@ -233,6 +233,7 @@ typedef struct app_state {
     bool want_browse, want_quit, want_clear, want_restart, want_paste;
     bool want_save, want_save_as;
     bool show_help, show_settings, show_about, show_update;
+    bool ctx_open;               /* canvas context menu owns the pointer frame */
     bool auto_update;          /* live value of the settings checkbox */
     char toast[192];
     double toast_until;
@@ -316,6 +317,7 @@ eng_device device_pref(const app_state *st);
 void engine_start_now(app_state *st);
 void engine_submit_next(app_state *st);
 img_pixels *job_raw_result_px(job *j, img_pixels *out);  /* denoise RGB + source alpha, no mask */
+img_pixels *job_output_px(job *j, img_pixels *out);      /* what 另存为 writes: mask-composited result */
 void job_apply_done(cui_ctx *ui, app_state *st, job *j, dn_event *ev);
 void request_composite(app_state *st, job *j);
 void flush_composite(app_state *st);
@@ -326,6 +328,7 @@ void job_rerun(app_state *st, job *j);
 void app_handle_keys(cui_ctx *ui, app_state *st);
 void app_handle_drops(cui_ctx *ui, app_state *st);
 void app_do_paste(app_state *st);
+void app_do_copy(app_state *st, bool original);
 void app_do_save(app_state *st, bool save_as);
 /* Expands the save_name settings template into a 另存为 default name. */
 void app_save_default_name(const app_state *st, const job *j, char *out, size_t cap);
