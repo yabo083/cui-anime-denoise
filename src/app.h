@@ -96,6 +96,7 @@ typedef struct job {
     float l0;
     int res_down_pct;          /* parameters of the result currently shown */
     float res_l0;
+    int res_model;             /* eng_model that produced the current result */
     bool has_result;
 
     img_pixels orig;           /* full-res straight RGBA */
@@ -189,6 +190,7 @@ typedef struct app_state {
     /* model downloads (settings sheet): indexed by eng_model */
     bool dl_busy[4];
     unsigned long long dl_done[4], dl_total[4];
+    bool model_fb_noted;         /* the model fallback note already toasted */
 
     /* hit rects of the floating controls, filled by the paint pass and read
      * by the input pass one frame later (the test harness also uses them) */
@@ -365,6 +367,16 @@ void apply_fluent_theme(cui_ctx *ui, app_state *st);
 void ui_titlebar(cui_ctx *ui, app_state *st);
 void draw_stage_area(cui_ctx *ui, app_state *st, float height);
 void ui_dialogs(cui_ctx *ui, app_state *st);
+/* The settings sheet's "模型" section (ui_models.c): the model picker plus
+ * the per-model management rows (state, download progress, delete). */
+void ui_models_section(cui_ctx *ui, app_state *st);
+/* Selection/deletion actions behind the model rows; the bench calls them to
+ * drive the same code path the radio and buttons take. */
+void app_select_model(app_state *st, eng_model m);
+void app_delete_model(app_state *st, eng_model m);
+/* The stored selection cannot run as stored (pair incomplete / deleted):
+ * the pill's warning tint and the model section's warning line read this. */
+bool app_model_sel_broken(app_state *st);
 void stage_handle_input(app_state *st, job *j);
 /* Feeds the stage's press-edge trackers while a modal gates input. */
 void stage_track_buttons(cui_ctx *ui);

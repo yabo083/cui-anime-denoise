@@ -20,6 +20,7 @@ typedef struct app_settings {
     int down_pct;            /* 10..100 */
     float l0;                /* 0..0.005 */
     int device;              /* 0 auto, 1 gpu, 2 cpu (eng_device) */
+    int model;               /* eng_model: 0 esrgan (bundled), 1 cugan, 2 apisr */
 
     /* brush */
     float brush_size;        /* 2..300 px */

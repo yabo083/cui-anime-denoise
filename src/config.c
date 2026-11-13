@@ -338,6 +338,7 @@ void cfg_defaults(app_settings *s)
     s->down_pct = 60;
     s->l0 = 0.001f;
     s->device = 0;                 /* auto */
+    s->model = 0;                  /* ENG_M_ESRGAN: the bundled model */
     s->brush_size = 14.0f;
     s->brush_mix = 90.0f;
     s->feather_px = 10.0f;
@@ -381,6 +382,7 @@ static void cfg_clamp(app_settings *s)
     clamp_int(&s->down_pct, 10, 100);
     clamp_float(&s->l0, 0.0f, 0.005f, 0.0f);
     clamp_int(&s->device, 0, 2);
+    clamp_int(&s->model, 0, 2);
     clamp_float(&s->brush_size, 2.0f, 300.0f, 60.0f);
     clamp_float(&s->brush_mix, 0.0f, 100.0f, 50.0f);
     clamp_float(&s->feather_px, 0.0f, 150.0f, 8.0f);
@@ -513,6 +515,7 @@ static void settings_to_json(const app_settings *s, cfg__sb *b)
     cfg__sb_addf(b, "    \"down_pct\": %d,\n", s->down_pct);
     cfg__sb_addf(b, "    \"l0\": %.6g,\n", (double)s->l0);
     cfg__sb_addf(b, "    \"device\": %d,\n", s->device);
+    cfg__sb_addf(b, "    \"model\": %d,\n", s->model);
     cfg__sb_addf(b, "    \"brush_size\": %.6g,\n", (double)s->brush_size);
     cfg__sb_addf(b, "    \"brush_mix\": %.6g,\n", (double)s->brush_mix);
     cfg__sb_addf(b, "    \"feather_px\": %.6g,\n", (double)s->feather_px);
@@ -811,6 +814,8 @@ static void apply_setting(app_settings *s, const char *key, jtype t,
         j_int(t, num, &s->down_pct);
     } else if (strcmp(key, "device") == 0) {
         j_int(t, num, &s->device);
+    } else if (strcmp(key, "model") == 0) {
+        j_int(t, num, &s->model);
     } else if (strcmp(key, "l0") == 0) {
         j_float(t, num, &s->l0);
     } else if (strcmp(key, "brush_size") == 0) {

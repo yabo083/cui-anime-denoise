@@ -384,6 +384,12 @@ void engine_start_now(app_state *st) {
 void engine_submit_next(app_state *st) {
     if (st->bench) return;
     if (!st->engine_ready || job_running(st)) return;
+    /* the model is a live setting, not a queued parameter: whatever the
+     * settings sheet has selected when the job leaves the queue is what it
+     * runs (the denoiser resolves it to an actually-loadable model). */
+    eng_model model = st->set.model >= ENG_M_ESRGAN &&
+                      st->set.model <= ENG_M_APISR
+                          ? (eng_model)st->set.model : ENG_M_ESRGAN;
     for (int i = 0; i < st->count; i++) {
         job *j = &st->jobs[i];
         if (j->status != JOB_QUEUED) continue;
@@ -394,7 +400,8 @@ void engine_submit_next(app_state *st) {
         j->cancel_sent = false;
         j->error[0] = 0;
         out_paths(st, j);
-        if (!dn_push_denoise(j->id, j->src_key, &j->orig, j->down_pct, j->l0)) {
+        if (!dn_push_denoise(j->id, j->src_key, &j->orig, j->down_pct, j->l0,
+                             model)) {
             j->status = JOB_ERROR;
             j->id = 0;
             str_copy(j->error, sizeof j->error, "无法提交去噪任务。");
@@ -562,8 +569,22 @@ void job_apply_done(cui_ctx *ui, app_state *st, job *j, dn_event *ev) {
     j->has_result = true;
     j->res_down_pct = j->down_pct;
     j->res_l0 = j->l0;
+    j->res_model = ev->model;
     j->ms = ev->ms;
     j->sr_cached = ev->sr_cached;
+    /* a DONE with a message ran on the bundled fallback model: toast once
+     * per fallback stretch, not once per queued image. The persistent
+     * warning is derived from the selection state (the pill and the model
+     * section read it) rather than stored, so it cannot go stale and it
+     * never clobbers the GPU->CPU device note. */
+    if (ev->message[0]) {
+        if (!st->model_fb_noted) {
+            toast(st, ev->message);
+            st->model_fb_noted = true;
+        }
+    } else {
+        st->model_fb_noted = false;
+    }
 
     img_pixels px = {0};
     if (job_result_px(j, &px)) {
@@ -583,8 +604,18 @@ void job_apply_done(cui_ctx *ui, app_state *st, job *j, dn_event *ev) {
     }
     char when[32];
     fmt_ms(ev->ms, when, sizeof when);
-    snprintf(j->note, sizeof j->note, "已完成 · %s%s", when, ev->sr_cached ? " · 复用超分结果" : "");
-    log_info("done %s in %d ms%s", j->name, ev->ms, ev->sr_cached ? " (sr cached)" : "");
+    if (ev->message[0]) {
+        snprintf(j->note, sizeof j->note, "已完成 · %s · 已回退内置模型", when);
+    } else if (j->res_model != ENG_M_ESRGAN) {
+        snprintf(j->note, sizeof j->note, "已完成 · %s · %s", when,
+                 eng_model_name((eng_model)j->res_model));
+    } else {
+        snprintf(j->note, sizeof j->note, "已完成 · %s%s", when,
+                 ev->sr_cached ? " · 复用超分结果" : "");
+    }
+    log_info("done %s in %d ms%s%s", j->name, ev->ms,
+             ev->sr_cached ? " (sr cached)" : "",
+             ev->message[0] ? " (model fell back to ESRGAN)" : "");
     engine_submit_next(st);
 }
 
