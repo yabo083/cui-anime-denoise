@@ -235,3 +235,24 @@ FlipRotator…）都可能改变像素格式，CopyPixels 前要么 GetPixelForm
 声明了 RGBA"只约束输入，不约束输出。回归测试：tests/test_img.c
 的 test_resize_channels（非对称色块+半透明行，swap 和
 premultiply 两种坏法都能抓）。
+
+## L-024 「下载完成」要对齐到消费者的不变量，不是网络事务完成
+
+**现象**：模型管理里点「下载」，`.pth` 实际已写进用户模型目录，按钮却
+回弹成「未下载」，模型也永远装不进会话。
+**根因**：`eng_model_download` 只把 `.pth` 落进 `user_models_dir`；而
+`eng_model_status` 与 `eng_prepare` 都要求 `.skel.onnx` 与 `.pth`
+**同目录**（骨架把 `.pth` 当 ONNX external data 按相对路径读，不
+同目录 ORT 直接找不到权重）。两个半边各在一处 = 永远不可用——
+下载的「成功」定义本身就和消费者脱节。
+**修法**：`eng_model_download` 改收 `const eng_config *`（两个目录都
+要有），`.pth` 验证落盘后把 `models_dir` 的骨架复制到 `user_models_dir`，
+失败即回滚 `.pth` 并明说骨架缺失；`pth_looks_done`（pinned 尺寸 +
+PK 魔数）让盘上已完整的权重跳过取网直接补 pair。status 把两半边分开
+报，「都存在但不同目录」显示 co-located 缺失而非「未下载」。
+**教训**：① 「文件都下载了」≠「功能可用」——成功条件必须对齐到
+**加载方真正检查的那个不变量**（这里是同目录 pair），不是对齐到
+网络事务返回；② 状态 UI 必须能把「未下载」与「下载了但配不起来」
+分开报，否则用户只会看到按钮回弹这种无法解释的表象；
+③ 给「下载」加上「已完整则只补缺失半边」的短路语义后，同一个按钮
+天然就是修复入口，不用再发明第二个操作。

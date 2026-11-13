@@ -49,6 +49,15 @@ declaration (`mask_hist_bytes_used`, defined in `src/mask.c`). It is
 deliberately not in `mask.h`: the contract header only carries what the
 application needs.
 
+## test_models.c — the model-pair logic (src/engine/models.c)
+
+Covers the states the settings surface renders, without a network: the
+same-directory pair invariant (a .pth and a skeleton in different dirs is
+NOT available), the skip-the-network repair when weights already verify,
+the skeleton copy + rollback that ends a real download, and delete. The
+update_io / CUI helpers models.c borrows are stubbed in the file; build
+lines are in its header comment.
+
 ## test_denoiser.c — the in-process inference worker (src/denoiser.c)
 
 Covers the thread lifecycle (start -> READY, restart, shutdown), job

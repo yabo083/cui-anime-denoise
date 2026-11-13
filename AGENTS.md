@@ -33,6 +33,7 @@ Windows 原生去噪工具：C + CUI 即时模式 UI，进程内 ONNX Runtime（
 | 设置、路径、日志、崩溃、诊断包 | `src/config.h` 注释 | `src/config.c`（设置/路径）、`src/log.c`（日志/崩溃/诊断包） |
 | 更新与安装包 | `src/update.h` 注释、`installer/` | `src/update.c`, `installer/*.iss` |
 | 原生推理引擎、设备回退、瓦片、L0、模型下载 | `docs/design.md` §7、`src/engine/engine.h` 注释 | `src/engine/*.c` |
+| 模型选择、下载/删除行、模型回退提示 | `docs/design.md` §7.6 | `src/ui_models.c`, `src/denoiser.c`（`dn_resolve_model`） |
 | 行为规格（该出现什么效果） | `tests/test-suite.md` | `lab/测试工程/bench/bench_main.c` |
 | 历史决策与踩坑 | `.context/DECISIONS.md`、`.context/LESSONS.md` | — |
 
@@ -43,13 +44,15 @@ src/app.c      状态机、denoiser 事件、意图处理、帧编排（不含�
 src/app_jobs.c 任务生命周期、加载队列、提交、宿主侧保护合成
 src/app_input.c 键盘命令、拖放、粘贴、另存为、文件对话框、保护模式进出
 src/ui_shell.c 40px 标题栏、设置侧栏、帮助/关于/更新对话框
+src/ui_models.c 设置侧栏「模型」节：三模型单选 + 状态/下载/删除行、回退警示
 src/ui_stage.c 画布地板、对比分屏、遮罩叠加、笔刷光标、阶段输入
 src/ui_lasso.c 磁性套索：锚点、live-wire、闭合/减选（stage 拆出）
 src/ui_float.c 浮层：主控 pill、胶片托盘、保护工具条、微调卡、横幅、空态、浮层命中
 src/ui_fluent.c Fluent 调色板上 token + 自绘控件原语（seg/按钮/滑杆/图标钮）
 src/ui_fluent.h 上述原语的声明 + 无 token 角色的规范色
 src/ui_tokens.h 视觉 token 唯一来源（几何/字号/圆角/动效；颜色走 CUI token）
-src/denoiser.c 进程内推理工作线程：任务/事件环、SR 缓存、设备与模型管理
+src/denoiser.c 进程内推理工作线程核心：任务/事件环、SR 缓存、引擎生命周期
+src/denoiser_models.c denoiser 拆出的模型管理：状态查询/选择解析/删除/下载任务（与 denoiser.c 共享 denoiser_int.h 内部头）
 src/loader.c   图片解码线程（解码 + 缩放 + 缩略图，UI 只建纹理）
 src/img.c      WIC 解码/编码/缩放/剪贴板/保护合成
 src/mask.c     蒙版：笔刷、套索、羽化、瓦片撤销
@@ -61,7 +64,7 @@ src/engine/engine.h    引擎契约：线程约定、设备/模型枚举、错�
 src/engine/engine.c    ORT 装载：DML/CPU EP 会话、瓦片推理、流水线（叶子，≤1200）
 src/engine/resample.c  Pillow 8bpc BOX/LANCZOS 逐字节移植
 src/engine/l0.c        L0 平滑（pocketfft，float64，多线程）
-src/engine/models.c    APISR/CUGAN .pth 状态与下载（复用 update_io 助手）
+src/engine/models.c    APISR/CUGAN .pth 状态/下载/配对/删除（下载以同目录 pair 为成功）
 models/        随包 ONNX 模型（esrgan_anime6b_x4 + CUGAN/APISR 骨架）
 assets/        字体（Noto Sans SC 子集 + Lucide）
 installer/     Inno Setup 脚本

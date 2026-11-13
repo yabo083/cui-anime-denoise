@@ -233,4 +233,39 @@ QUEUED ──ready──► RUNNING ──done──► DONE ──(参数变)�
   `user_models_dir` → `models_dir`。
 - APISR/CUGAN 的 `.pth` 不随包分发：用户下载（`eng_model_download`），
   下载与解包都校验 pinned SHA-256（CUGAN 是 zip，取文件名以 .pth 结尾的成员）。
+  下载的成功条件是 **pair 完整**：`.pth` 落盘后随包骨架被复制到同目录，
+  骨架缺失则报错并回滚 `.pth`（状态机与 UI 见 §7.6）。
 - 会话 I/O 名固定为 `input`/`output`（export_onnx.py 保证）；不一致宁可回退 CPU 也不猜名。
+
+### 7.6 模型管理（GUI 侧功能模块，`src/ui_models.c`）
+
+注册表视角：三个模型统一一张表，每行每帧只读
+`eng_model_status()` + `dl_*` 事件槽——状态是文件事实的投影，不猜：
+
+| 状态 | 判定 | 行内表现 |
+|---|---|---|
+| bundled-ready | `models_dir` 有 `esrgan_anime6b_x4.onnx` | 「已就绪」，无操作按钮 |
+| ready | `.skel.onnx` + `.pth` 同目录（user 或 bundled） | 「已就绪」+「删除」 |
+| not-downloaded | 无 `.pth` | 「未下载」+「下载」 |
+| downloading | `dl_busy[m]` | 进度条（DN_EV_DL_* 驱动） |
+| broken-half | 两半边都存在但不同目录 | 「文件不完整」+「下载」（兼作修复）+「删除」 |
+
+- **选择持久化**：`settings.model`（0..2，默认 ESRGAN），「恢复默认设置」归零。
+  只能选中 ready 的模型——radio 对不可用项禁用，选不到就是选不到。
+- **选择是偏好不是队列参数**：任务出队提交时取当前 `set.model`；
+  denoiser 端 `dn_resolve_model` 再落到真实可用模型。文件被删/半截
+  状态/载入失败 → 回落 `ENG_M_ESRGAN`，DONE 事件带 `message` 与
+  `model`（实际所用模型），UI toast 一次并在结果注记写明——
+  **禁止**静默换模型跑。
+- **惰性 prepare**：`eng_prepare` 按模型缓存会话（`ses[4]`），换模型无需
+  重启引擎；切到新模型的首个任务在任务内付一次编译成本。
+- **回退指示是推导的**：`app_model_sel_broken()`（选中模型 pair 不完整即真）
+  驱动设备 pill 警示点与设置页警示行——文件回来自动消失，不落字段、
+  不会陈旧；`device_note` 保持专属于设备（GPU→CPU）回退。
+- **SR 缓存键含模型**：`{src_key, down_pct, model}`——同图同参换模型
+  不得复用上一模型的超分结果。
+- **下载即修复**：盘上 `.pth` 已满足 pinned 尺寸 + PK 魔数（下载在落盘后
+  被中断、或用户手工放置）时，`eng_model_download` 跳过取网只做配对，
+  「下载」键天然兼作修复；网络返回 `pth_looks_done` 短路。
+- **删除只清 `user_models_dir` 的 pair**；删除当前选中模型时选择同时
+  归零回 ESRGAN。CUGAN 的「仅 CPU」在选项描述里明示（§7.2 的硬约束）。

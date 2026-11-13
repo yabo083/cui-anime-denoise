@@ -105,3 +105,29 @@ CLI `sheet.c` 的 GDI 族名同步改为 `Noto Sans SC Medium/Noto Sans SC`。
 **备选**：思源黑体 OTF（同源但 OTF/CFF 且 'Source' 是 RFN，须改名）；
 MiSans/OPPO Sans/阿里普惠体（均专有许可，同病）。OFL 是唯一干净解。
 **状态**：已采纳，构建 1.1.4 安装包待用户实测确认。
+
+## ADR-014 模型管理：状态即文件事实，模型选择是偏好而非队列参数
+
+**背景**：原「模型管理」只是两行下载按钮。下载完成后 `.pth` 落在用户
+目录、骨架留在安装目录——按引擎的「骨架 + `.pth` 同目录才算 pair」
+不变量，下载永远没有成功过：按钮回弹「未下载」，且 GUI 把
+`ENG_M_ESRGAN` 硬编进 denoiser，用户也没有任何手段换模型。
+**决定**：
+- 下载以 **pair 完成**为成功条件（`eng_model_download` 改收
+  `eng_config`：`.pth` 验证落盘后把 `models_dir` 里的随包骨架复制到
+  `user_models_dir` 同目录；骨架缺失报错并回滚 `.pth`）。盘上已完整
+  的 `.pth`（pinned 尺寸 + PK 魔数）跳过取网直接补 pair——「下载」
+  键兼作修复。
+- 三模型注册表进设置（新 `src/ui_models.c`）：stock radio 单选 +
+  每行状态（就绪/未下载/文件不完整/下载进度）与下载、删除；行状态每帧
+  读 `eng_model_status()` + `dl_*` 事件槽，不落 UI 侧冗余字段。
+- `settings.model` 持久化（0..2，默认 ESRGAN，恢复默认归零）。选择是
+  **偏好**：任务提交取当前值，`run_denoise` 经 `dn_resolve_model` 落到
+  真实可用模型——文件失效/载入失败回落 ESRGAN，DONE 事件带 `model`
+  （实际所用）与 `message`（回退说明）；`app_model_sel_broken()` 推导
+  出 pill 警示点与设置页警示行，不落字段、文件回来即消失。
+- `eng_prepare` 本就按模型缓存会话（`ses[4]`），改在任务内惰性编译——
+  换模型免重启；SR 缓存键补 `model` 位，防跨模型复用。
+**代价**：模型行每帧 3 次文件状态检查（沿用旧行已有做法，代价可忽略）；
+CUGAN 的「仅 CPU」约束只能写在选项描述里提示，不拦截。
+**状态**：已采纳（1.1.5）。
