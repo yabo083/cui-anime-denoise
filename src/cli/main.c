@@ -824,7 +824,7 @@ int wmain(int argc, wchar_t **wargv)
     /* ---------------- download-only mode ---------------- */
     if (o.download) {
         eng_model m;
-        wchar_t *dir;
+        eng_config cfg;
         if (_stricmp(o.download, "cugan") == 0) m = ENG_M_CUGAN;
         else if (_stricmp(o.download, "apisr") == 0) m = ENG_M_APISR;
         else {
@@ -832,18 +832,27 @@ int wmain(int argc, wchar_t **wargv)
                      o.download);
             return 2;
         }
-        dir = o.models_dir ? u2w(o.models_dir) : default_models_dir();
-        if (!dir) return 3;
+        /* the weights land in --models (the user dir); the bundled skeleton
+         * is copied out of <exe>\models next to them to complete the pair */
+        memset(&cfg, 0, sizeof cfg);
+        cfg.models_dir = join_w(j.exe_dir, L"models");
+        cfg.user_models_dir = o.models_dir ? u2w(o.models_dir) : default_models_dir();
+        if (!cfg.models_dir || !cfg.user_models_dir) {
+            free((void *)cfg.models_dir);
+            free((void *)cfg.user_models_dir);
+            return 3;
+        }
         fprintf(stderr, "downloading %s weights...\n", o.download);
-        rc = eng_model_download(m, dir, dl_progress, &j.prog, &g_cancel, err, sizeof err);
+        rc = eng_model_download(&cfg, m, dl_progress, &j.prog, &g_cancel,
+                                err, sizeof err);
+        free((void *)cfg.models_dir);
+        free((void *)cfg.user_models_dir);
         if (rc == 0) {
             err_line("done");
-            free(dir);
             return 0;
         }
         err_line("download failed: %s", err);
-        free(dir);
-        return rc == 1 ? 1 : 1;
+        return 1;
     }
 
     /* ---------------- engine setup ---------------- */

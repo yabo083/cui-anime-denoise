@@ -2,7 +2,9 @@
  * redistributed with the app: the user downloads the upstream .pth into
  * user_models_dir, and a weightless <name>.skel.onnx (emitted by
  * tools/export_onnx.py) reads it as ONNX external data. The skeleton must sit
- * in the same directory as its .pth.
+ * in the same directory as its .pth -- that is the "pair" every status and
+ * load check looks for, and the download only counts as complete once the
+ * bundled skeleton has been copied next to the fresh .pth.
  *
  * Downloads reuse the updater's WinHTTP helper (system proxy, streaming
  * SHA-256, progress); CUGAN arrives as a zip -- the one member whose name ends
@@ -136,12 +138,32 @@ static int pair_in(const model_def *d, const wchar_t *dir,
     return ok;
 }
 
+const char *eng_model_name(eng_model m) {
+    switch (m) {
+        case ENG_M_ESRGAN: return "ESRGAN";
+        case ENG_M_CUGAN:  return "CUGAN";
+        case ENG_M_APISR:  return "APISR";
+        case ENG_M_NONE:   return "L0";
+        default:           return "?";
+    }
+}
+
 void eng_model_status(const eng_config *cfg, eng_model m,
                       eng_model_state *st) {
     const model_def *d = find_def(m);
     memset(st, 0, sizeof(*st));
     if (!d) {
-        st->available = (m == ENG_M_ESRGAN); /* bundled */
+        /* bundled ESRGAN: still a file check, a broken install reports it */
+        st->available = (m == ENG_M_ESRGAN);
+        if (m == ENG_M_ESRGAN && cfg && cfg->models_dir) {
+            wchar_t *p = join_path(cfg->models_dir, "esrgan_anime6b_x4.onnx");
+            st->available = file_exists(p);
+            if (!st->available) {
+                snprintf(st->missing, sizeof(st->missing),
+                         "esrgan_anime6b_x4.onnx");
+            }
+            free(p);
+        }
         return;
     }
     st->weights_name = d->weights;
@@ -179,10 +201,16 @@ void eng_model_status(const eng_config *cfg, eng_model m,
                         pair_in(d, cfg->models_dir, st);
     }
     if (!st->available) {
-        snprintf(st->missing, sizeof(st->missing),
-                 "%s%s%s", st->weights_present ? "" : d->weights,
-                 (!st->weights_present && !st->skeleton_present) ? " + " : "",
-                 st->skeleton_present ? "" : d->skel);
+        /* both halves exist but in different directories: still not a pair */
+        if (st->weights_present && st->skeleton_present) {
+            snprintf(st->missing, sizeof(st->missing), "%s",
+                     "skeleton and weights not co-located");
+        } else {
+            snprintf(st->missing, sizeof(st->missing),
+                     "%s%s%s", st->weights_present ? "" : d->weights,
+                     (!st->weights_present && !st->skeleton_present) ? " + " : "",
+                     st->skeleton_present ? "" : d->skel);
+        }
     }
 }
 
@@ -391,10 +419,107 @@ static void dl_progress(void *ctx, unsigned long long done,
     }
 }
 
-int eng_model_download(eng_model m, const wchar_t *user_models_dir,
+bool eng_model_pair_complete(const eng_config *cfg, eng_model m,
+                             char *err, size_t cap) {
+    const model_def *d = find_def(m);
+    wchar_t *w, *dst, *src;
+    int ok;
+
+    if (!d) {
+        set_err(err, cap, "model %d has no downloadable weights", (int)m);
+        return false;
+    }
+    if (!cfg || !cfg->user_models_dir || !cfg->models_dir) {
+        set_err(err, cap, "models_dir and user_models_dir are required");
+        return false;
+    }
+    w = join_path(cfg->user_models_dir, d->weights);
+    ok = file_exists(w);
+    free(w);
+    if (!ok) {
+        set_err(err, cap, "%s: weights not downloaded", d->weights);
+        return false;
+    }
+    dst = join_path(cfg->user_models_dir, d->skel);
+    if (file_exists(dst)) {
+        free(dst);
+        return true;             /* the pair is already co-located */
+    }
+    src = join_path(cfg->models_dir, d->skel);
+    if (!src || !file_exists(src)) {
+        /* the weightless skeleton ships with the app; losing it is an
+         * install problem, not a download problem -- say so plainly */
+        set_err(err, cap, "bundled skeleton missing: %S "
+                "(reinstall the app)", src ? src : L"");
+        free(src);
+        free(dst);
+        return false;
+    }
+    ok = CopyFileW(src, dst, FALSE) != 0;
+    if (!ok) {
+        set_err(err, cap, "cannot copy skeleton to %S (error %lu)",
+                dst, GetLastError());
+    }
+    free(src);
+    free(dst);
+    return ok;
+}
+
+bool eng_model_delete(const eng_config *cfg, eng_model m) {
+    const model_def *d = find_def(m);
+    wchar_t *p;
+    int gone = 0;
+
+    if (!d || !cfg || !cfg->user_models_dir) {
+        return false;
+    }
+    p = join_path(cfg->user_models_dir, d->weights);
+    if (p) {
+        gone |= DeleteFileW(p) != 0;
+        free(p);
+    }
+    p = join_path(cfg->user_models_dir, d->skel);
+    if (p) {
+        gone |= DeleteFileW(p) != 0;
+        free(p);
+    }
+    return gone != 0;
+}
+
+/* The stored .pth already looks like the finished download: the pinned byte
+ * size plus the PyTorch zip magic. A mismatch just means "fetch again". */
+static int pth_looks_done(const wchar_t *path, const model_def *d) {
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    unsigned char magic[4] = {0};
+    HANDLE f;
+    DWORD got = 0;
+    int ok = 0;
+
+    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &fa)) {
+        return 0;
+    }
+    if ((((unsigned long long)fa.nFileSizeHigh << 32) |
+         fa.nFileSizeLow) != d->weights_size) {
+        return 0;
+    }
+    f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    if (ReadFile(f, magic, 4, &got, NULL) && got == 4) {
+        ok = magic[0] == 'P' && magic[1] == 'K' &&
+             magic[2] == 3 && magic[3] == 4;
+    }
+    CloseHandle(f);
+    return ok;
+}
+
+int eng_model_download(const eng_config *cfg, eng_model m,
                        eng_dl_progress_fn cb, void *ud, volatile long *cancel,
                        char *err, size_t cap) {
     const model_def *d = find_def(m);
+    const wchar_t *user_models_dir;
     wchar_t *dest = NULL, *tmp = NULL;
     char computed[65];
     unsigned long long got_total = 0;
@@ -405,8 +530,9 @@ int eng_model_download(eng_model m, const wchar_t *user_models_dir,
         set_err(err, cap, "model %d has no downloadable weights", (int)m);
         return -1;
     }
-    if (!user_models_dir) {
-        set_err(err, cap, "user_models_dir required");
+    user_models_dir = cfg ? cfg->user_models_dir : NULL;
+    if (!user_models_dir || !cfg->models_dir) {
+        set_err(err, cap, "models_dir and user_models_dir are required");
         return -1;
     }
     if (cancel && *cancel) {
@@ -421,6 +547,22 @@ int eng_model_download(eng_model m, const wchar_t *user_models_dir,
                                              : "weights_download.pth.tmp");
     if (!dest || !tmp) {
         set_err(err, cap, "out of memory");
+        goto end;
+    }
+
+    /* the weights are already on disk and verify as the finished download
+     * (a previous run was interrupted after the .pth landed, or the user
+     * dropped the file in by hand): skip the fetch entirely and just make
+     * the pair complete -- a "download" click then also repairs a broken
+     * half-state for free instead of refetching tens of MB */
+    if (pth_looks_done(dest, d)) {
+        if (!eng_model_pair_complete(cfg, m, err, cap)) {
+            goto end;
+        }
+        if (cb) {
+            cb(ud, d->weights_size, d->weights_size);
+        }
+        ret = 0;
         goto end;
     }
 
@@ -488,6 +630,16 @@ int eng_model_download(eng_model m, const wchar_t *user_models_dir,
                     GetLastError());
             goto end;
         }
+    }
+
+    /* stage 3: the download is not complete until the skeleton sits next to
+     * the weights -- ORT resolves external data relative to the .onnx, so a
+     * .pth that lands here is invisible to the engine (and to
+     * eng_model_status) until the pair is co-located. Roll the .pth back
+     * out on failure rather than leave the broken half-state behind. */
+    if (!eng_model_pair_complete(cfg, m, err, cap)) {
+        DeleteFileW(dest);
+        goto end;
     }
     ret = 0;
 

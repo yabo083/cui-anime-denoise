@@ -93,9 +93,14 @@ void eng_image_free(eng_image *im);
 bool eng_resize(const eng_image *src, int w, int h, int filter, eng_image *out);
 
 /* models.c -- optional model management (APISR / CUGAN are downloaded by the
- * user, not redistributed). */
+ * user, not redistributed). A downloadable model is usable only as a *pair*:
+ * the weightless <name>.skel.onnx and its .pth in the SAME directory (the
+ * skeleton reads the .pth as ONNX external data relative to its own path).
+ * `available` below means such a pair is complete in user_models_dir or
+ * models_dir; weights_present/skeleton_present report the halves separately
+ * so the UI can tell "not downloaded" from "broken half-state". */
 typedef struct {
-    bool available;          /* skeleton + matching .pth present */
+    bool available;          /* skeleton + matching .pth in one directory */
     bool skeleton_present;
     bool weights_present;
     const char *weights_name;    /* "2x_APISR_RRDB_GAN_generator.pth" */
@@ -110,14 +115,33 @@ typedef struct {
  * Search order: user_models_dir, then models_dir. */
 void eng_model_status(const eng_config *cfg, eng_model m, eng_model_state *st);
 
-/* Blocking download of the upstream .pth into user_models_dir: temp file ->
- * SHA-256 verify -> zip member extraction if needed -> rename.
- * Returns 0 ok, 1 cancelled, -1 error. Progress cb(done,total,ud). */
+/* "ESRGAN" / "CUGAN" / "APISR" / "L0" -- short display name for notes. */
+const char *eng_model_name(eng_model m);
+
+/* Blocking download of the upstream .pth into cfg->user_models_dir:
+ * temp file -> SHA-256 verify -> zip member extraction if needed ->
+ * rename -> pair the bundled skeleton from cfg->models_dir next to it.
+ * A weights file that is already complete on disk (right size + zip magic,
+ * e.g. from a run that was interrupted after the .pth landed) skips the
+ * fetch and only completes the pair, so a "download" click also repairs
+ * a broken half-state for free. Returns 0 ok, 1 cancelled, -1 error.
+ * Progress cb(done,total,ud). */
 typedef void (*eng_dl_progress_fn)(void *ud, unsigned long long done,
                                    unsigned long long total);
-int eng_model_download(eng_model m, const wchar_t *user_models_dir,
+int eng_model_download(const eng_config *cfg, eng_model m,
                        eng_dl_progress_fn cb, void *ud, volatile long *cancel,
                        char *err, size_t cap);
+
+/* Completes the pair in cfg->user_models_dir: the .pth must already be there
+ * (verified downloads land it); the bundled skeleton is copied from
+ * cfg->models_dir when missing. Returns false with a clear error when the
+ * weights are absent or the bundled skeleton is gone. */
+bool eng_model_pair_complete(const eng_config *cfg, eng_model m,
+                             char *err, size_t cap);
+
+/* Deletes the downloaded pair (weights + copied skeleton) from
+ * cfg->user_models_dir. Returns true when at least one file was removed. */
+bool eng_model_delete(const eng_config *cfg, eng_model m);
 
 /* Python round-half-even for the downscaled size (round(W*down)). */
 int eng_round_half_even(double x);
