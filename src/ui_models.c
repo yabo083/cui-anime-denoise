@@ -84,11 +84,16 @@ bool app_model_sel_broken(app_state *st) {
     return !ms.available;
 }
 
-/* One registry row: [radio + trait] [status / action]. */
+/* One registry row: [radio + trait] [status / action]. The per-model id
+ * scope matters: two rows render a "下载"/"删除" button each, and same-label
+ * buttons under one seed resolve to the SAME id -- they would share hot,
+ * active, click and animation state (hovering one lit both; clicking one
+ * fired both downloads). */
 static void ui_model_row(cui_ctx *ui, app_state *st, eng_model m,
                          const eng_model_state *ms, int *sel) {
     bool busy = st->dl_busy[m];
     bool broken_half = !ms->available && (ms->weights_present || ms->skeleton_present);
+    cui_push_id_int(ui, (int)m);
     cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
         cui_column(ui, .width = CUI_FILL, .gap = 0) {
             cui_radio(ui, UI_MODEL_INFO[m].title, sel, (int)m,
@@ -134,6 +139,7 @@ static void ui_model_row(cui_ctx *ui, app_state *st, eng_model m,
             }
         }
     }
+    cui_pop_id(ui);
 }
 
 void ui_models_section(cui_ctx *ui, app_state *st) {
