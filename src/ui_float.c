@@ -55,17 +55,12 @@ static int btn_state(cui_ctx *ui, cui_rect r) {
 static const char *PILL_PRESET[3] = { "轻柔", "推荐", "强力" };
 static const char *PILL_VIEW[3] = { "对比", "原图", "结果" };
 
-#define PILL_PRESET_W  156.0f
-#define PILL_VIEW_W    138.0f
-#define PILL_SAVE_W     96.0f
-#define PILL_ADD_W     100.0f
-
-static cui_rect pill_rect(app_state *st, cui_rect stage, job *j) {
+static cui_rect pill_rect(cui_ctx *ui, cui_rect stage, job *j) {
     bool full = j && j->has_result;
-    float w = UI_PILL_PAD * 2.0f + PILL_PRESET_W;
-    if (full) w += UI_S8 + PILL_VIEW_W + UI_S8 + UI_ICONBTN + UI_S4 + UI_ICONBTN + UI_S8 + PILL_SAVE_W;
-    else w += UI_S8 + PILL_ADD_W;
-    (void)st;
+    float w = UI_PILL_PAD * 2.0f + ui_seg_w(ui, PILL_PRESET, 3);
+    if (full) w += UI_S8 + ui_seg_w(ui, PILL_VIEW, 3) + UI_S8 + UI_ICONBTN + UI_S4
+                 + UI_ICONBTN + UI_S8 + ui_button_w(ui, CUI_ICON_SAVE, "另存为");
+    else w += UI_S8 + ui_button_w(ui, CUI_ICON_PLUS, "添加图片");
     return (cui_rect){ stage.x + (stage.w - w) * 0.5f,
                        stage.y + stage.h - UI_PILL_LIFT - UI_PILL_H, w, UI_PILL_H };
 }
@@ -77,7 +72,7 @@ static void pill_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
 
     bool full = j && j->has_result;
     float a = cui_animate(ui, cui_make_id(ui, "pill"), 1.0f);
-    cui_rect pr = pill_rect(st, stage, j);
+    cui_rect pr = pill_rect(ui, stage, j);
     pr.y += (1.0f - a) * 14.0f;
     st->r_pill = pr;
     if (a < 0.02f) return;
@@ -88,14 +83,14 @@ static void pill_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
     float cy = pr.y + (UI_PILL_H - UI_SEG_H) * 0.5f;
 
     /* preset segmented */
-    cui_rect seg = { x, cy, PILL_PRESET_W, UI_SEG_H };
+    cui_rect seg = { x, cy, ui_seg_w(ui, PILL_PRESET, 3), UI_SEG_H };
     ui_seg_draw(ui, seg, PILL_PRESET, 3,
                 st->preset <= 2 ? st->preset : DEFAULT_PRESET, cui_make_id(ui, "seg_preset"));
     st->r_preset = seg;
     x += seg.w + UI_S8;
 
     if (full) {
-        cui_rect vseg = { x, cy, PILL_VIEW_W, UI_SEG_H };
+        cui_rect vseg = { x, cy, ui_seg_w(ui, PILL_VIEW, 3), UI_SEG_H };
         ui_seg_draw(ui, vseg, PILL_VIEW, 3, (int)st->view, cui_make_id(ui, "seg_view"));
         st->r_view = vseg;
         x += vseg.w + UI_S8;
@@ -115,7 +110,7 @@ static void pill_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
         double age = j->saved_at > 0.0 ? now_seconds() - j->saved_at : 99.0;
         bool tick = age < 2.5;
         if (tick) cui_request_wakeup(ui, (float)(2.5 - age));
-        cui_rect sv = { x, cy, PILL_SAVE_W, UI_SEG_H };
+        cui_rect sv = { x, cy, ui_button_w(ui, CUI_ICON_SAVE, "另存为"), UI_SEG_H };
         ui_button_draw(ui, sv, tick ? CUI_ICON_CHECK : CUI_ICON_SAVE,
                        tick ? "已保存" : "另存为", !tick, false, btn_state(ui, sv));
         if (tick)
@@ -123,7 +118,7 @@ static void pill_paint(cui_ctx *ui, app_state *st, cui_rect stage, job *j) {
                           15.0f, cui_token_color(ui, CUI_TOKEN_SUCCESS));
         st->r_pill_save = sv;
     } else {
-        cui_rect ad = { x, cy, PILL_ADD_W, UI_SEG_H };
+        cui_rect ad = { x, cy, ui_button_w(ui, CUI_ICON_PLUS, "添加图片"), UI_SEG_H };
         ui_button_draw(ui, ad, CUI_ICON_PLUS, "添加图片", false, false, btn_state(ui, ad));
         st->r_pill_add = ad;
     }
@@ -354,7 +349,7 @@ static float protect_lay(cui_ctx *ui, app_state *st, job *j, cui_rect pr, bool p
     x += UI_S4;
 
     /* 未保护结果 toggle */
-    cui_rect up = { x, cyc, 76.0f, UI_ICONBTN_SM };
+    cui_rect up = { x, cyc, ui_button_w(ui, NULL, "未保护"), UI_ICONBTN_SM };
     if (paint) {
         ui_button_draw(ui, up, NULL, "未保护", false, !j->has_result, btn_state(ui, up));
         if (st->view_unprotected)
@@ -363,14 +358,14 @@ static float protect_lay(cui_ctx *ui, app_state *st, job *j, cui_rect pr, bool p
     }
     x += up.w + UI_S8;
 
-    cui_rect cc = { x, cyc, 56.0f, UI_ICONBTN_SM };
+    cui_rect cc = { x, cyc, ui_button_w(ui, NULL, "取消"), UI_ICONBTN_SM };
     if (paint) {
         ui_button_draw(ui, cc, NULL, "取消", false, false, btn_state(ui, cc));
         st->r_pcancel = cc;
     }
     x += cc.w + UI_S4;
 
-    cui_rect dn = { x, cyc, 56.0f, UI_ICONBTN_SM };
+    cui_rect dn = { x, cyc, ui_button_w(ui, NULL, "完成"), UI_ICONBTN_SM };
     if (paint) {
         ui_button_draw(ui, dn, NULL, "完成", true, false, btn_state(ui, dn));
         st->r_pdone = dn;
@@ -467,7 +462,8 @@ static void tune_paint(cui_ctx *ui, app_state *st, cui_rect stage) {
     st->r_tune_slider[1] = s1;
     y += 26.0f;
 
-    cui_rect rs = { cr.x + cr.w - UI_S16 - 72.0f, y - 4.0f, 72.0f, 24.0f };
+    float rsw = ui_button_w(ui, CUI_ICON_ROTATE_CCW, "重置");
+    cui_rect rs = { cr.x + cr.w - UI_S16 - rsw, y - 4.0f, rsw, 24.0f };
     ui_button_draw(ui, rs, CUI_ICON_ROTATE_CCW, "重置", false, false, btn_state(ui, rs));
     st->r_tune_reset = rs;
     cui_pop_clip(ui);
@@ -491,7 +487,8 @@ static void banner_paint(cui_ctx *ui, app_state *st, cui_rect stage) {
     cui_text_metrics t2 = cui_measure_text(ui, CUI_FONT_BODY, UI_FS_CAPTION, sub, -1);
     float text_w = t1.width > t2.width ? t1.width : t2.width;
     if (text_w > 380.0f) text_w = 380.0f;
-    float w = 24.0f + text_w + (err ? 76.0f : 0.0f) + 16.0f;
+    float bw = err ? ui_button_w(ui, CUI_ICON_REFRESH_CW, "重试") : 0.0f;
+    float w = UI_S16 + 22.0f + text_w + (err ? UI_S8 + bw : 0.0f) + UI_S16;
     float a = cui_animate(ui, cui_make_id(ui, "banner"), 1.0f);
     cui_rect br = { stage.x + (stage.w - w) * 0.5f, stage.y + UI_S8, w, UI_BANNER_H };
     br.y -= (1.0f - a) * (UI_BANNER_H + 8.0f);
@@ -516,7 +513,7 @@ static void banner_paint(cui_ctx *ui, app_state *st, cui_rect stage) {
                       fl_text2(ui), sub, -1);
     x += text_w + 8.0f;
     if (err) {
-        cui_rect rb = { x, br.y + (UI_BANNER_H - UI_ICONBTN_SM) * 0.5f, 68.0f, UI_ICONBTN_SM };
+        cui_rect rb = { x, br.y + (UI_BANNER_H - UI_ICONBTN_SM) * 0.5f, bw, UI_ICONBTN_SM };
         ui_button_draw(ui, rb, CUI_ICON_REFRESH_CW, "重试", false, false, btn_state(ui, rb));
         st->r_banner_retry = rb;
     }
@@ -545,7 +542,8 @@ void ui_empty_paint(cui_ctx *ui, app_state *st, cui_rect r) {
     cui_draw_text(ui, CUI_FONT_BODY, UI_FS_BODY,
                   (cui_vec2){ cx - m2.width * 0.5f, cr.y + 122 }, fl_text3(ui), t2, -1);
 
-    cui_rect br = { cx - 52.0f, cr.y + 148, 104.0f, 30.0f };
+    float bw = ui_button_w(ui, CUI_ICON_FOLDER_OPEN, "浏览文件…");
+    cui_rect br = { cx - bw * 0.5f, cr.y + 148, bw, 30.0f };
     ui_button_draw(ui, br, CUI_ICON_FOLDER_OPEN, "浏览文件…", true, false, btn_state(ui, br));
 }
 

@@ -73,6 +73,7 @@
 - 字阶（Noto Sans SC）：Title 18/24 Bold；Subtitle 14/20 Medium；Body 13/18；Caption 11/14。数值一律 tabular + 中等字重。
 - 尺寸：标题栏 40（系统键 46×40）；主控制条 44 高/圆胶囊/距底 24；分段控件 32 高、滑块 R6；图标钮 32×32（icon 16）、紧凑 28×28（icon 14）；滑杆轨 4px、拇指 16（active 18 + 6px accent 圆点）；保护工具条 44；设置抽屉 320；浮层 260。
 - 自绘控件的文字垂直居中一律用字框 `ascent − descent`（`fl_font_h`），不是 `cui_measure_text().height`——后者是 1.45×字号的排版行高，居中会整体偏高；与 CUI 组件内部的 `cui__font_line_height` 同口径。文字、图标、状态点共用控件中线 `cy`。测量字体必须与绘制字体一致（分段控件选中项是 MEDIUM）。
+- 控件宽度按内容自适应：`ui_button_w`/`ui_seg_w` 实测标签宽（MEDIUM），容器宽=子控件实测宽之和+间距；按钮内容在矩形内居中。例外：滑杆轨道与其数值区保持定宽，避免拖动数值时整条工具条重排。
 
 ## 6. 动效
 

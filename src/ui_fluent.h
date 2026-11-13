@@ -42,6 +42,15 @@ static inline float fl_font_h(cui_text_metrics m) { return m.ascent - m.descent;
 void ui_iconbtn_draw(cui_ctx *ui, cui_rect r, const char *icon, int state, bool on);
 void ui_button_draw(cui_ctx *ui, cui_rect r, const char *icon, const char *text,
                     bool accent, bool disabled, int state);
+/* Natural widths — the floaters pass these so controls hug their label and
+ * container padding stays symmetric; never hand-sum magic widths. The draw
+ * calls still centre their content inside whatever rect they get, so a wider
+ * rect looks right too. */
+float ui_button_w(cui_ctx *ui, const char *icon, const char *text);
+/* Equal segments sized to the widest label, measured in MEDIUM — the weight
+ * the selected item draws in — with a 12px inset each side and a 48px
+ * minimum per segment so the hit area stays usable. */
+float ui_seg_w(cui_ctx *ui, const char *const *items, int count);
 /* Segmented control: card track + raised thumb; the thumb springs between
  * segments through cui_animate_spring. Hit with ui_seg_hit(). */
 void ui_seg_draw(cui_ctx *ui, cui_rect r, const char *const *items, int count,

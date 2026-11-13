@@ -122,7 +122,8 @@ void ui_iconbtn_draw(cui_ctx *ui, cui_rect r, const char *icon, int state, bool 
     cui_draw_icon(ui, icon, r, r.h >= UI_ICONBTN ? UI_ICON_MD : UI_ICON_SM, c);
 }
 
-/* Text button; accent fills the accent role. */
+/* Text button; accent fills the accent role. The content (icon + label)
+ * centres inside r; callers normally pass ui_button_w() so r already hugs. */
 void ui_button_draw(cui_ctx *ui, cui_rect r, const char *icon, const char *text,
                     bool accent, bool disabled, int state) {
     cui_color fg = disabled ? fl_text3(ui)
@@ -134,17 +135,39 @@ void ui_button_draw(cui_ctx *ui, cui_rect r, const char *icon, const char *text,
                                     : fl_press(ui);
     cui_draw_rect_border(ui, r, CUI_CORNERS(UI_R_MD), bg,
                          accent || disabled ? CUI_TRANSPARENT : fl_border(ui), 1.0f);
-    float x = r.x + 10.0f;
+    bool has_icon = icon && *icon, has_text = text && *text;
+    cui_text_metrics tm = { 0 };
+    if (has_text) tm = cui_measure_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY, text, -1);
+    float content = (has_icon ? 22.0f : 0.0f) + tm.width;
+    float x = r.x + (r.w - content) * 0.5f;
+    if (x < r.x + 10.0f) x = r.x + 10.0f;
     float cy = r.y + r.h * 0.5f;
-    if (icon && *icon) {
+    if (has_icon) {
         cui_draw_icon(ui, icon, (cui_rect){ x, cy - 8.0f, 16, 16 }, 15.0f, fg);
         x += 22.0f;
     }
-    if (text && *text) {
-        cui_text_metrics tm = cui_measure_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY, text, -1);
+    if (has_text)
         cui_draw_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY,
                       (cui_vec2){ x, cy - fl_font_h(tm) * 0.5f }, fg, text, -1);
+}
+
+float ui_button_w(cui_ctx *ui, const char *icon, const char *text) {
+    float w = 20.0f;   /* 10px padding each side, matching the draw clamp */
+    if (icon && *icon) w += 22.0f;
+    if (text && *text)
+        w += cui_measure_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY, text, -1).width;
+    return w < 44.0f ? 44.0f : w;
+}
+
+float ui_seg_w(cui_ctx *ui, const char *const *items, int count) {
+    float label = 0.0f;
+    for (int i = 0; i < count; i++) {
+        float tw = cui_measure_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY, items[i], -1).width;
+        if (tw > label) label = tw;
     }
+    float seg = label + UI_S12 * 2.0f;
+    if (seg < 48.0f) seg = 48.0f;
+    return seg * (float)count;
 }
 
 /* Segmented control: card track, raised thumb under the selected segment.
