@@ -285,3 +285,19 @@ hover 读取也都是 modal 盲的。手画命中层不会自动知道 CUI 的�
 **教训**：① 每加一条手画命中/热区路径，先问"modal 开着时它该不该
 活"——逐处漏一处就是穿透；② 给 bench 留断言要选可观察的退出
 语义（`want_quit` 标志）而不是 Win32 副作用（PostMessage）。
+
+## L-027 对抗性审计两则：所有权移交前先释放；「已在运行」是最坏的谎言
+
+**现象**（二审实锤）：
+① `job_apply_done` 直接 `j->res = ev->rgb`——job_rerun 保留
+   has_result，每次重跑孤儿化一块全尺寸 RGB（大图数十 MB）。
+② join 超时后老线程仍持有任务环（alive=1、stop=1），`dn_start`
+   却答「已在运行」→ 启动流程白等 60s 才报假「启动超时」。
+   下载任务让这条从理论变成现实（54MB WinHTTP chunk 可超 8s join）。
+**修法**：① 赋值前 `eng_image_free(&j->res)`——所有权移交的标准
+   姿势是"先释放旧值再收新值"；② `dn_start` 用 `stop` 标志区分
+   健康运行 vs 停止中，后者诚实返回 false + last_error，
+   `dn_restart` 改返回 bool 让 app 层走现成错误横幅。
+**教训**：① 所有权移交的审计模式是"找出所有写 p = new_owner 的点，
+   问旧值谁放"；② 状态机里「already up」与「正在死」共用一个
+   alive 标志就是谎报源——生死之间必须有一个可判别的中间态。
