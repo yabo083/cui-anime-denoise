@@ -321,7 +321,7 @@ static float protect_lay(cui_ctx *ui, app_state *st, job *j, cui_rect pr, bool p
             if (suffix[i][0]) strncat(vb, suffix[i], sizeof vb - strlen(vb) - 1);
             cui_text_metrics tm = cui_measure_text(ui, CUI_FONT_BODY, UI_FS_CAPTION, vb, -1);
             cui_draw_text(ui, CUI_FONT_BODY, UI_FS_CAPTION,
-                          (cui_vec2){ x + 68.0f, pr.y + (UI_PROTECT_H - tm.height) * 0.5f },
+                          (cui_vec2){ x + 68.0f, pr.y + (UI_PROTECT_H - fl_font_h(tm)) * 0.5f },
                           fl_text3(ui), vb, -1);
         }
         x += 64.0f + 24.0f + UI_S4;

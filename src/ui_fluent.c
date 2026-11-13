@@ -143,7 +143,7 @@ void ui_button_draw(cui_ctx *ui, cui_rect r, const char *icon, const char *text,
     if (text && *text) {
         cui_text_metrics tm = cui_measure_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY, text, -1);
         cui_draw_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY,
-                      (cui_vec2){ x, cy - tm.height * 0.5f }, fg, text, -1);
+                      (cui_vec2){ x, cy - fl_font_h(tm) * 0.5f }, fg, text, -1);
     }
 }
 
@@ -162,10 +162,11 @@ void ui_seg_draw(cui_ctx *ui, cui_rect r, const char *const *items, int count,
     cui_draw_rect_border(ui, thumb, CUI_CORNERS(UI_R_MD),
                          cui_token_color(ui, CUI_TOKEN_SURFACE_RAISED), fl_border(ui), 1.0f);
     for (int i = 0; i < count; i++) {
-        cui_text_metrics tm = cui_measure_text(ui, CUI_FONT_BODY, UI_FS_BODY, items[i], -1);
-        cui_draw_text(ui, i == index ? CUI_FONT_MEDIUM : CUI_FONT_BODY, UI_FS_BODY,
+        cui_font f = i == index ? CUI_FONT_MEDIUM : CUI_FONT_BODY;
+        cui_text_metrics tm = cui_measure_text(ui, f, UI_FS_BODY, items[i], -1);
+        cui_draw_text(ui, f, UI_FS_BODY,
                       (cui_vec2){ r.x + iw * i + (iw - tm.width) * 0.5f,
-                                  r.y + (r.h - tm.height) * 0.5f },
+                                  r.y + (r.h - fl_font_h(tm)) * 0.5f },
                       i == index ? cui_token_color(ui, CUI_TOKEN_FOREGROUND) : fl_text2(ui),
                       items[i], -1);
     }

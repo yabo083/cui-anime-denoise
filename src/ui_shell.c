@@ -79,7 +79,7 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
                   cui_token_color(ui, CUI_TOKEN_ACCENT));
     x += 22.0f;
     cui_text_metrics tm = cui_measure_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY, APP_TITLE, -1);
-    cui_draw_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY, (cui_vec2){ x, cy - tm.height * 0.5f },
+    cui_draw_text(ui, CUI_FONT_MEDIUM, UI_FS_BODY, (cui_vec2){ x, cy - fl_font_h(tm) * 0.5f },
                   text1(ui), APP_TITLE, -1);
     x += tm.width + UI_S16;
 
@@ -89,10 +89,10 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
         bool hot = ui_hit(link, cui_mouse_pos(ui));
         if (hot) cui_draw_rect(ui, link, CUI_CORNERS(UI_R_MD), fl_hover(ui));
         cui_draw_text(ui, CUI_FONT_BODY, UI_FS_CAPTION,
-                      (cui_vec2){ x, cy - fn.height * 0.5f },
+                      (cui_vec2){ x, cy - fl_font_h(fn) * 0.5f },
                       hot ? cui_token_color(ui, CUI_TOKEN_ACCENT) : fl_text3(ui), j->name, -1);
         if (hot)
-            cui_draw_rect(ui, (cui_rect){ x, cy + fn.height * 0.5f + 1.0f, fn.width, 1.0f },
+            cui_draw_rect(ui, (cui_rect){ x, cy + fl_font_h(fn) * 0.5f + 1.0f, fn.width, 1.0f },
                           CUI_CORNERS(0), cui_token_color(ui, CUI_TOKEN_ACCENT));
         st->r_title_name = link;
         ZONE(link);
@@ -162,7 +162,7 @@ static void titlebar_paint(cui_ctx *ui, cui_rect r, void *user) {
                                          : cui_token_color(ui, CUI_TOKEN_DANGER);
         cui_draw_circle(ui, (cui_vec2){ dp.x + 12.0f, cy }, 4.0f, dot);
         cui_draw_text(ui, CUI_FONT_BODY, UI_FS_CAPTION,
-                      (cui_vec2){ dp.x + 21.0f, cy - dm.height * 0.5f },
+                      (cui_vec2){ dp.x + 21.0f, cy - fl_font_h(dm) * 0.5f },
                       hot ? text1(ui) : fl_text2(ui), name, -1);
         if (warn)
             cui_draw_icon(ui, CUI_ICON_TRIANGLE_ALERT,

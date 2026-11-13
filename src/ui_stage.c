@@ -410,7 +410,7 @@ static void draw_chip(cui_ctx *ui, float x, float y, const char *text) {
     float w = m.width + 14.0f, h = 20.0f;
     cui_draw_rect(ui, (cui_rect){ x, y, w, h }, CUI_CORNERS(UI_R_MD), CUI_RGBA(0x0000008c));
     cui_draw_text(ui, CUI_FONT_MEDIUM, UI_FS_CAPTION,
-                  (cui_vec2){ x + 7.0f, y + (h - m.height) * 0.5f },
+                  (cui_vec2){ x + 7.0f, y + (h - fl_font_h(m)) * 0.5f },
                   CUI_RGBA(0xffffffff), text, -1);
 }
 
@@ -582,7 +582,7 @@ static void stage_paint(cui_ctx *ui, cui_rect r, void *user) {
                 if (tx + tm.width > r.x + r.w - UI_S8) tx = m.x - rad - UI_S8 - tm.width;
                 if (tx < r.x + UI_S8) tx = r.x + UI_S8;
                 cui_draw_text(ui, CUI_FONT_BODY, UI_FS_CAPTION,
-                              (cui_vec2){ tx, m.y - tm.line_height * 0.5f },
+                              (cui_vec2){ tx, m.y - fl_font_h(tm) * 0.5f },
                               dark ? CUI_RGBA(0xffffff99) : CUI_RGBA(0x00000099), hint, -1);
             }
         }

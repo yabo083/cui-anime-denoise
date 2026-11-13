@@ -32,6 +32,12 @@ bool ui_hit(cui_rect r, cui_vec2 m);
 /* Frame-edge press of the left button for the custom controls. One per file
  * that uses it; ui_float and ui_shell keep separate statics. */
 
+/* Visible glyph height of a measured line: the font box (ascent + |descent|),
+ * NOT metrics.height — that is the 1.45x paragraph line height meant for text
+ * flow; centring on it parks every label ~0.2em above the control's middle.
+ * CUI centres its own components on this same box (cui__font_line_height). */
+static inline float fl_font_h(cui_text_metrics m) { return m.ascent - m.descent; }
+
 /* state: 0 idle, 1 hot, 2 pressed. `on` draws the accent-tinted toggle state. */
 void ui_iconbtn_draw(cui_ctx *ui, cui_rect r, const char *icon, int state, bool on);
 void ui_button_draw(cui_ctx *ui, cui_rect r, const char *icon, const char *text,

@@ -200,3 +200,18 @@ HarmonyOS 子集 cmap 里。跑 `gen_assets --check` 才发现，同时报出
 **教训**：改 vendored 库前先把参数的真实语义查清——`menu` 形参在这里
 是"菜单式条目导航"，不是"右键菜单"；select 也传 menu=true 且需要
 锚宽，按 menu 一刀切会回归下拉框。
+
+## L-022 cui_measure_text 的 height 是排版行高，不是字框
+
+**现象**：全部自绘控件（按钮/分段/标题栏/pill/保护条/角标）文字
+统一偏高约 3px，和按矩形中心摆放的图标明显不齐；CUI 原生菜单
+反而齐。
+**修法**：居中用字框 ascent−descent（新增 fl_font_h），9 处全换；
+分段控件顺带改成"用哪个字重画就用哪个字重量"（MEDIUM 选中项
+曾用 BODY 宽度水平居中）。
+**教训**：`cui_draw_text` 的 y 是字框顶（baseline = y + ascent×size），
+而 metrics.height = size×1.45 是多行文本流的行盒高——拿行盒高
+去居中字框必然偏。CUI 自己组件走内部 cui__font_line_height
+(ascent−descent)×size，公开 API 里没有等价助手，自绘代码要
+自带这条约定。HarmonyOS 时代同样存在，Noto 的字框/行高差更大
+才暴露。
