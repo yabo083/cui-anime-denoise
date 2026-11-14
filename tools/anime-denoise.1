@@ -1,0 +1,54 @@
+.TH ANIME-DENOISE 1
+.SH NAME
+anime-denoise \- native anime-image denoise and upscale CLI
+.SH SYNOPSIS
+.B anime-denoise
+.IR input ...
+[options]
+.SH DESCRIPTION
+Fast ONNX Runtime port of gpt-anime-denoise: ESRGAN/CUGAN/APISR
+super-resolution plus L0 smoothing, tiled inference, ICC/EXIF
+preservation, PNG/JPEG in and out.
+.SH OPTIONS
+.TP
+.BI "--method " NAME
+esrgan60_l0 (default), esrgan60, cugan60_l0, cugan60, apisr,
+l0_0.001, l0_0.0005
+.TP
+.BI --all
+run all 7 methods and write a 4x2 comparison <stem>_sheet.png
+.TP
+.BI "--l0 " X
+L0 strength (default 0.001; 0 skips L0)
+.TP
+.BI "--down " PCT
+pre-downscale percent (default 60; apisr ignores it)
+.TP
+.BI "--device " auto|gpu|cpu
+inference device (default auto; gpu uses CUDA EP when available)
+.TP
+.BI "--models " DIR
+model dir (default $XDG_DATA_HOME/anime-denoise/models)
+.TP
+.BI "--download " NAME
+fetch cugan|apisr weights and exit
+.TP
+.B --json
+one JSON object per completed item on stdout
+.TP
+.BI "--out " DIR
+output directory (default <stem>_denoise/ beside the input)
+.TP
+.BR --stdin / --stdout
+read one image from stdin / write result PNG to stdout
+.TP
+.BR --quiet ", " -q
+no progress output
+.SH FILES
+.TP
+.I /usr/lib/anime-denoise
+binary, runtime/, models/, assets/, cuda-setup.sh
+.SH SEE ALSO
+.BR anime-denoise-cuda-setup (1)
+.SH HOMEPAGE
+https://github.com/yabo083/cui-anime-denoise

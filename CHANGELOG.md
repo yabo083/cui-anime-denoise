@@ -18,6 +18,12 @@
 - `setup.sh` 按 `/dev/nvidia*`|`nvidia-smi` 自动选择 ORT
   `linux-x64(-gpu)` 包（`ORT_RUNTIME=cpu|gpu` 强制），tar 有 pinned
   sha256 校验，.so 原子暂存。
+- Linux 终端安装包（`tools/build_pkg.sh`，Inno Setup 对位物）：
+  `anime-denoise_<ver>_amd64.deb`（`/usr/lib/anime-denoise` + `/usr/bin`
+  软链 + man 页 + copyright，`dpkg -i/-r` 托管）与
+  `anime-denoise_<ver>_linux-x64.tar.gz`（便携树 + `install.sh
+  --prefix`）；NVIDIA 机器 `sudo anime-denoise-cuda-setup` 原地换装
+  CUDA provider 库。
 - 新增平台缝 `src/plat.h`（路径/文件/目录扫描/线程/原子/时钟/dlopen），
   实现分 `src/plat_win.c`（原 Win32 语义）与 `src/posix/plat_posix.c`；
   `engine.c`/`l0.c`/`models.c`/CLI 共用单一代码路径。

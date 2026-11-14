@@ -52,6 +52,19 @@ make -f tools/Makefile.posix -j$(nproc)
 链接器默认搜索路径）与 `<exe>/models/`。`servers/bren9np/anime-denoise/
 setup.sh` 一键完成 ONNX Runtime 下载、构建与目录摆放。
 
+**终端用户安装包**（`tools/build_pkg.sh` 在 Debian 系主机上产出）：
+
+- `anime-denoise_<ver>_amd64.deb` — `sudo dpkg -i` 安装：
+  `/usr/lib/anime-denoise/`（二进制 + runtime + models + assets +
+  cuda-setup.sh），`/usr/bin/anime-denoise` 与
+  `anime-denoise-cuda-setup` 软链，man 页与 copyright 随包；
+  `dpkg -r` 干净卸载。
+- `anime-denoise_<ver>_linux-x64.tar.gz` — 便携树 + `install.sh`
+  （`--prefix` 任意目录，默认 `/usr/local`，`~/.local` 免 sudo）。
+- NVIDIA GPU 机器装完跑一次 `sudo anime-denoise-cuda-setup`：下载
+  `linux-x64-gpu` 包（pinned sha256）并原地换装 CUDA provider 库，
+  之后 `--device gpu|auto` 走 CUDA EP。
+
 与 Windows 版的行为差异（仅平台使然，输出语义一致）：
 
 - **GPU 为 CUDA EP**：staged 的运行时是 `linux-x64-gpu` 包且主机有
