@@ -26,6 +26,7 @@
 | I16 | 用户目录放 `.pth`、骨架只在 bundled（分离 pair） | `eng_model_pair_complete` | 分离态 `!available` 且 `missing` 指明不共址（按钮呈「下载」）；补全后 `available`（按钮消失呈「已就绪」），`dn_resolve_model` 返回该模型 | 同目录 pair 不变量（§7.6）；补全=下载的收尾动作 |
 | I17 | CUGAN pair 已就绪 | `app_select_model`；`cfg_load` 回读；`app_delete_model`；把 `set.model` 置成无文件模型 | 不可用模型选择被拒；选中持久化进 settings.json；删除选中模型后 `set.model` 归零；失效选择经 `app_model_sel_broken` 派生警示、`dn_resolve_model` 回退 ESRGAN | 选择是偏好（§7.6）：提交时 resolve，不可用回退不静默 |
 | I18 | 设置侧栏打开 | 点击 `r_close` 中心；侧栏消失后再点同一像素 | 第一次：sheet 被 scrim 点击关闭但 `want_quit` 不置位（标题栏整条惰性）；第二次：`want_quit` 置位（按钮不死） | `app_modal_open` 门控 `ui_titlebar_input` + `titlebar_paint` 的 `ui_hit` 读取；sheet 的 × 与 `r_close` 存在 ~20×12px 角部重叠，裸跑会把关窗穿透成 `chrome_close()` |
+| I19 | 任意 | `cui_set_theme` 深→浅各一次，各 pump 60 帧落地 | 落地后 `ACCENT`/`TEXT_SECONDARY`/`TEXT_MUTED` 三 token 均为 Fluent 值——`apply_fluent_theme` 的 accent 哨兵必须在每次 CUI retarget（重建 stock 目标 + ~320ms lerp 覆盖活跃表）后自愈；secondary 曾以 7 位字面值 `0x0CCCCCc7`（青色）出厂，仅查 accent 的哨兵会全程绿灯漏检 | `app_frame` 调色板哨兵；`cui__theme_retarget`/`cui__theme_update` |
 
 ## 启动与线程（需人工或新增场景验证）
 
@@ -68,10 +69,11 @@
 | V9 | 托盘瓦片 48px 圆角 6，分页器仅在超页时出现 |
 | V10 | 大图预览通道序：shot 16（2800×1900 > DISPLAY_MAX）对比分屏两侧色相一致——WIC 缩放器可能输出 BGRA，两侧预览均经 `img_resize`，R↔B 交换会立即可见；字节级回归由 `test_img.c::test_resize_channels` 保证 |
 | V11 | 模型节行隔离：两行都有「下载」/「删除」时，悬停其一**只有该行**高亮，点击只触发该行（同名按钮须在各行的 `cui_push_id_int` 作用域内；bench 里按钮禁用，人工核对） |
+| V12 | 深色设置侧栏次级文字：shot 17（lerp 落地后）所有说明/路径/未选中分段标签为中性灰，非强调青——`TEXT_SECONDARY` 曾以 `0x0CCCCCc7` 出厂 |
 
 ## 回归门
 
-`lab/测试工程` 跑 1000 次迭代后：14 个性能场景 p95 均在预算内、18 项交互断言全 PASS、
+`lab/测试工程` 跑 1000 次迭代后：14 个性能场景 p95 均在预算内、19 项交互断言全 PASS、
 `report/latest/report.md` 存档。引擎层模型配对/下载语义另由 `tests/test_models.c`
 （无网络，47 断言）与 `tests/test_denoiser.c`（真实引擎 39 断言：模型回退 +
 `dn_start` 白盒判别 alive/stop——join 超时孤儿窗口里必须拒答而非谎报"已就绪"）覆盖。

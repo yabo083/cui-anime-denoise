@@ -355,3 +355,26 @@ sha256；CMYK 复用 `img.c` 朴素公式；auto/gpu 都经 `want_gpu` 提示。
 Inno 的 RestartApplications 覆盖不到自己退出的进程；(3) 持久标记必须
 与可验证的终态比对，存在性不等于成功。E2E：`bench --update-e2e` +
 本地 manifest 可全链路复现（见 test-suite.md 回归门）。
+
+## L-031 颜色断言要覆盖"看得见的角色"，像素对比抓语法层漏网（2026-11-14）
+
+**现象**：深色主题下设置页所有次级文字（说明、路径、未选中分段标签）
+渲染成青色；用户截图确诊。浅色主题正常。
+**根因**：两处独立病灶叠加——
+(1) `apply_fluent_theme` 的 `CUI_TOKEN_TEXT_SECONDARY` 深色值写成
+7 位十六进制 `0xCCCCCc7`（= `0x0CCCCCc7`，RGB(12,204,204) 即青色），
+本意 `0xCCCCCCC7`——C 编译器不会警告少一位的字面值；
+(2) CUI `cui__theme_retarget` 每次重建 stock 目标调色板并 ~320ms lerp
+覆盖活跃表，`apply_fluent_theme` 只在明暗翻转时重刷 → 跟随系统/
+系统主题切换后调色板静默衰减回 stock（阴性对照：去掉哨兵后深色
+accent 落地为 stock `6ba3ff` 而非 Fluent `4cc2ff`）。
+**修法**：字面值补位 + `app_frame` accent 哨兵（token 非 Fluent 值即
+重刷，无论哪条路径重置）+ bench I19 三 token 断言 + shot 17 深色
+设置页截图。
+**教训**：(1) 颜色字面值是 8 位 RGBA，少一位=通道全错且编译无警告，
+写调色板时对表逐个数位；(2) 断言覆盖面要对齐"用户看得见什么"——
+只查 accent 的哨兵在 secondary 全错时照样绿灯；(3) 先验的架构解释
+（lerp 覆盖）可能是真的但不是**那个** bug——截图对照才能分清
+"颜色错了"和"颜色被覆盖了"；(4) 框架层的渐变/重置机制会把自定义
+表洗回默认：自定义调色板必须有自愈哨兵，不能只在"我知道的变化点"
+打补丁。

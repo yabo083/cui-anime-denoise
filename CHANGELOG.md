@@ -3,6 +3,21 @@
 本项目版本与 GitHub Release 一一对应；GUI 内自动更新读取 Release 资产
 `update.json`（`releases/latest/download/` 始终指向最新版）。
 
+## [1.1.8]
+
+### 修复
+- 深色主题下所有次级文字渲染成青色：`apply_fluent_theme` 的
+  `CUI_TOKEN_TEXT_SECONDARY` 深色值写成了 7 位十六进制 `0xCCCCCc7`
+  （= `0x0CCCCCc7`，RGB(12,204,204) 青色），本意 `0xCCCCCCC7`。
+  设置页说明、输出路径、未选中分段标签、「内置模型 · 4×」全部中招；
+  浅色值正确所以只有深色可见。bench 新增 I19 断言（主题切换落地后
+  accent/secondary/muted 三 token 均为 Fluent 值）与 shot 17
+  （深色设置页截图人工比对）。
+- CUI 主题 retarget 会把自定义调色板洗回 stock：`cui__theme_retarget`
+  每次重建 stock 目标并以 ~320ms lerp 覆盖活跃表，`apply_fluent_theme`
+  只在明暗模式变化时重刷，跟随系统/系统主题切换路径下落地即 stock。
+  `app_frame` 现加 accent 哨兵：token 非 Fluent 值即重刷，无论谁重置。
+
 ## [1.1.7]
 
 ### 修复

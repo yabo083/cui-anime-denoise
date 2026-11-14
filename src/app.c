@@ -454,8 +454,21 @@ void app_frame(cui_app *app, cui_ctx *ui, app_state *st) {
     cui_request_wakeup(ui, busy ? 0.05f : 0.5f);
 
     /* the Fluent palette rides on the token roles; re-apply it whenever the
-     * theme mode flips (system theme follows can change it any frame) */
-    if (st->theme_applied != (int)cui_get_theme_mode(ui)) apply_fluent_theme(ui, st);
+     * theme mode flips (system theme follows can change it any frame).
+     * Sentinel guard on top of that: every CUI retarget rebuilds the target
+     * palette stock and lerps the live table toward it for ~320 ms, which
+     * clobbers custom colours regardless of which path triggered the reset --
+     * so a wrong accent means re-apply, no matter how it got wrong. */
+    {
+        cui_theme *th = cui_theme_get(ui);
+        bool dark = cui_get_theme_mode(ui) == CUI_THEME_DARK;
+        cui_color want_accent = CUI_RGBA(dark ? 0x4CC2FFff : 0x0067C0ff);
+        if (st->theme_applied != (int)cui_get_theme_mode(ui) ||
+            memcmp(&th->colors[CUI_TOKEN_ACCENT], &want_accent,
+                   sizeof want_accent) != 0) {
+            apply_fluent_theme(ui, st);
+        }
+    }
 
     /* Input order: chrome -> floating layers -> canvas. Each reads the hit
      * rects the previous frame's paint pass published; a click on a control
