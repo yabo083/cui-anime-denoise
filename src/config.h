@@ -5,7 +5,7 @@
  *   logs\app.log      rotating log, 4 MiB x 3
  *   projects\         per-image sidecars (mask.png, meta.json)
  *   models\           user-downloaded .pth weights (CUGAN / APISR), optional
- *   updates\          downloaded installer (update.bin + update.json)
+ *   updates\          downloaded installer (update.exe + update.json)
  */
 #ifndef CONFIG_H
 #define CONFIG_H

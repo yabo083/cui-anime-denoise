@@ -128,6 +128,10 @@ Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.heif\shell\AnimeDe
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Flags: nowait postinstall skipifsilent
+; The app's self-update hands off with /autolaunch=1 (upd_run_installer);
+; bring the app back up after a silent reinstall so the user lands where
+; they were. The check runs at the [Run] stage, after the install itself.
+Filename: "{app}\{#AppExeName}"; Flags: nowait; Check: UpdaterAutoLaunch
 
 [UninstallDelete]
 ; Only the installation directory. %LOCALAPPDATA%\AnimeDenoise (settings,
@@ -195,6 +199,13 @@ begin
     RegWriteExpandStringValue(HKCU, 'Environment', 'Path', NewPath)
   else
     RegDeleteValue(HKCU, 'Environment', 'Path');
+end;
+
+{ --- self-update handoff: relaunch the app after /autolaunch=1 installs --- }
+
+function UpdaterAutoLaunch(): Boolean;
+begin
+  Result := ExpandConstant('{param:autolaunch|0}') = '1';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

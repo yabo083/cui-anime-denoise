@@ -3,6 +3,19 @@
 本项目版本与 GitHub Release 一一对应；GUI 内自动更新读取 Release 资产
 `update.json`（`releases/latest/download/` 始终指向最新版）。
 
+## [1.1.7]
+
+### 修复
+- 「立即更新」点了没反应：下载的安装包落盘叫 `update.bin`，而启动它走
+  `ShellExecute(open)`——按扩展名查文件关联，`.bin` 无关联直接静默失败
+  （`SEE_MASK_FLAG_NO_UI` 把「如何打开」也压掉了）。改为 `CreateProcessW`
+  直接拉起，不再依赖关联表；载荷改名 `update.exe`。
+- 静默装完不会把应用拉回来：`/RESTARTAPPLICATIONS` 只对安装程序亲手关闭
+  的进程有效，而本应用是自己退出的。安装脚本新增 `[Run]` 项，由安装命令
+  行的 `/autolaunch=1` 触发，装完自动重新打开。
+- 更新标记 `pending-version.txt` 无条件弹「已更新」：安装被取消/回滚后
+  标记残留，下次启动会谎报更新成功。现在只有标记版本与运行版本一致才计。
+
 ## [1.1.6]
 
 ### 新增

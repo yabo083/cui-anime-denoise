@@ -13,13 +13,15 @@
  *                                  +--> FAILED                    --+--> READY
  *                                                                  +--> FAILED
  *
- * Downloaded bytes go to update.bin.tmp and are only renamed to update.bin
+ * Downloaded bytes go to update.exe.tmp and are only renamed to update.exe
  * after the size and SHA-256 match the manifest. update.json (the metadata)
  * is written last, so a snapshot of the directory is always consistent.
+ * The payload carries an .exe name even though CreateProcessW does not need
+ * it: anything else that ever touches the file (Explorer, a support script,
+ * a manual double-click) resolves by extension association.
  */
 #include "update_priv.h"
 
-#include <shellapi.h>
 #include <process.h>
 
 #include <ctype.h>
@@ -224,8 +226,8 @@ static void do_download(void) {
         return;
     }
     if (!upd__ensure_updates_dir() ||
-        !upd__updates_path(tmp_path, sizeof tmp_path, "update.bin.tmp") ||
-        !upd__updates_path(bin_path, sizeof bin_path, "update.bin") ||
+        !upd__updates_path(tmp_path, sizeof tmp_path, "update.exe.tmp") ||
+        !upd__updates_path(bin_path, sizeof bin_path, "update.exe") ||
         !upd__updates_path(json_path, sizeof json_path, "update.json")) {
         set_failed("cannot resolve the updates directory");
         return;
@@ -237,7 +239,7 @@ static void do_download(void) {
         return;
     }
 
-    /* Streams, hashes and verifies (size + SHA-256) into update.bin.tmp. A
+    /* Streams, hashes and verifies (size + SHA-256) into update.exe.tmp. A
      * rejected transfer leaves no file behind. */
     if (!upd__download_to_file(url, wtmp, expected_size, sha, publish_progress,
                                NULL, computed, &total, errbuf, sizeof errbuf)) {
@@ -245,7 +247,7 @@ static void do_download(void) {
         return;
     }
     if (!MoveFileExW(wtmp, wbin, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        snprintf(errbuf, sizeof errbuf, "cannot finalize update.bin (error %lu)",
+        snprintf(errbuf, sizeof errbuf, "cannot finalize update.exe (error %lu)",
                  GetLastError());
         DeleteFileW(wtmp);
         set_failed(errbuf);
@@ -259,7 +261,7 @@ static void do_download(void) {
                          version, computed, total);
         if (n > 0 && (size_t)n < sizeof json) {
             if (!upd__write_text_w(wjson, json)) {
-                log_warn("update: update.bin verified but update.json could not be written");
+                log_warn("update: update.exe verified but update.json could not be written");
             }
         }
     }
@@ -471,11 +473,10 @@ bool upd_run_installer(void) {
     char expected[80];
     char version[32];
     unsigned long long size = 0;
-    SHELLEXECUTEINFOW sei;
     bool have_expected = false;
 
     if (!g_inited) return false;
-    if (!upd__updates_path(bin_path, sizeof bin_path, "update.bin") ||
+    if (!upd__updates_path(bin_path, sizeof bin_path, "update.exe") ||
         !upd__updates_path(marker, sizeof marker, "pending-version.txt")) {
         log_error("update: cannot resolve installer paths");
         return false;
@@ -486,11 +487,11 @@ bool upd_run_installer(void) {
         return false;
     }
     if (GetFileAttributesW(wbin) == INVALID_FILE_ATTRIBUTES) {
-        log_error("update: update.bin is missing");
+        log_error("update: update.exe is missing");
         return false;
     }
     if (!upd__file_sha256_w(wbin, actual, &size)) {
-        log_error("update: cannot hash update.bin");
+        log_error("update: cannot hash update.exe");
         return false;
     }
     EnterCriticalSection(&g_lock);
@@ -499,7 +500,7 @@ bool upd_run_installer(void) {
     have_expected = g_have_manifest && expected[0] != 0;
     LeaveCriticalSection(&g_lock);
 
-    /* A previous session may have left a verified update.bin behind: trust
+    /* A previous session may have left a verified update.exe behind: trust
      * the metadata written last, not the payload, for the expected digest. */
     if (!have_expected) {
         char json_path[UPD_PATH_CAP];
@@ -523,11 +524,11 @@ bool upd_run_installer(void) {
     }
 
     if (!have_expected) {
-        log_error("update: no expected hash for update.bin");
+        log_error("update: no expected hash for update.exe");
         return false;
     }
     if (!upd__hex_equal(expected, actual)) {
-        log_error("update: update.bin hash mismatch, removing it");
+        log_error("update: update.exe hash mismatch, removing it");
         DeleteFileW(wbin);
         return false;
     }
@@ -536,19 +537,33 @@ bool upd_run_installer(void) {
         log_error("update: cannot write pending-version.txt");
         return false;
     }
-    ZeroMemory(&sei, sizeof sei);
-    sei.cbSize = sizeof sei;
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
-    sei.lpVerb = L"open";
-    sei.lpFile = wbin;
-    sei.lpParameters = L"/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /NORESTART";
-    sei.nShow = SW_SHOWNORMAL;
-    if (!ShellExecuteExW(&sei)) {
-        log_error("update: ShellExecuteExW failed (error %lu)", GetLastError());
-        DeleteFileW(wmarker);
-        return false;
+
+    /* CreateProcessW, never ShellExecute: the shell resolves "open" by file
+     * extension association, and a downloaded payload must not depend on the
+     * user's association table. The installer is per-user
+     * (PrivilegesRequired=lowest), so no elevation verb is needed either.
+     * /autolaunch=1 tells the [Run] entry to relaunch the app after install;
+     * /CLOSEAPPLICATIONS stays as a safety net for a lingering second
+     * instance still holding files in the install dir. */
+    {
+        wchar_t cmd[UPD_WPATH_CAP + 64];
+        STARTUPINFOW siw;
+        PROCESS_INFORMATION pi;
+        _snwprintf(cmd, UPD_WPATH_CAP + 64,
+                   L"\"%s\" /SILENT /CLOSEAPPLICATIONS /NORESTART /autolaunch=1",
+                   wbin);
+        cmd[UPD_WPATH_CAP + 63] = 0;
+        ZeroMemory(&siw, sizeof siw);
+        siw.cb = sizeof siw;
+        if (!CreateProcessW(wbin, cmd, NULL, NULL, FALSE, 0, NULL, NULL,
+                          &siw, &pi)) {
+            log_error("update: CreateProcessW failed (error %lu)", GetLastError());
+            DeleteFileW(wmarker);
+            return false;
+        }
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
     }
-    if (sei.hProcess) CloseHandle(sei.hProcess);
     log_info("update: installer launched for %s (%llu bytes)", version, size);
     return true;
 }
@@ -575,12 +590,22 @@ bool upd_take_updated_flag(char *version, size_t cap) {
     if (!ReadFile(f, buf, (DWORD)sizeof buf - 1, &got, NULL)) got = 0;
     CloseHandle(f);
     DeleteFileW(wmarker);
-    if (got == 0) return existed;
+    if (got == 0) return false;
     buf[got] = 0;
     len = strlen(buf);
     while (len > 0 && (buf[len - 1] == '\r' || buf[len - 1] == '\n' ||
                        buf[len - 1] == ' ' || buf[len - 1] == '\t')) {
         buf[--len] = 0;
+    }
+    /* The marker only credits an update when it names the version we are
+     * actually running now; a cancelled or rolled-back install leaves a
+     * marker that must not toast "updated". */
+    {
+        char current[32];
+        EnterCriticalSection(&g_lock);
+        snprintf(current, sizeof current, "%s", g_info.current);
+        LeaveCriticalSection(&g_lock);
+        if (buf[0] == 0 || strcmp(buf, current) != 0) return false;
     }
     if (version && cap) snprintf(version, cap, "%s", buf);
     return existed;

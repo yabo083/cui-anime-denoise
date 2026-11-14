@@ -76,7 +76,12 @@
 （无网络，47 断言）与 `tests/test_denoiser.c`（真实引擎 39 断言：模型回退 +
 `dn_start` 白盒判别 alive/stop——join 超时孤儿窗口里必须拒答而非谎报"已就绪"）覆盖。
 任务结果所有权另由 `bench --rerun-e2e`（真实引擎连续重跑，私有字节增长 ≤ 一个结果缓冲）
-守住 `job_apply_done` 的释放顺序。
+守住 `job_apply_done` 的释放顺序。自更新交接另由 `bench --update-e2e <data-dir>` 守：
+env `ANIME_DENOISE_UPDATE_URL` 指向本地 manifest（http.server 即可），断言走通
+check→download→READY→`upd_run_installer` 全程并写好 `updates\pending-version.txt`；
+detached 半程（静默安装、`/autolaunch=1` 重开、新版本消费标记）由编排脚本观察
+`<data>\updates\pending-version.txt` 消失与 `{app}\AnimeDenoise.exe` 进程出现确认。
+更新路径会改写真实安装目录，属手工验收，不入日常回归门。
 
 POSIX（`tools/Makefile.posix`）侧另有人工验收：Ubuntu 24.04/gcc 13.3 零警告构建；
 文件/文件夹/stdin/stdout/JSON/`--all` sheet/EXIF 方向/ICC 往返/16-bit 输入/模型

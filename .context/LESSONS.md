@@ -336,3 +336,22 @@ sha256；CMYK 复用 `img.c` 朴素公式；auto/gpu 都经 `want_gpu` 提示。
 **教训**：移植审计的最有效清单 = 「下层 API 的每个前置条件，哪条是
 上层 GUI 悄悄保证的」+「每处 size_t 循环边界对照数组真实大小」+
 「每种声称支持的格式真解码一次」。子代理做对抗审读，真机 E2E 补刀。
+
+## L-030 ShellExecute 按扩展名查关联：下载载荷永不走 shell（2026-11-14）
+
+**现象**：「立即更新」点了没反应——安装包已下载校验完，却没拉起安装。
+**根因**：载荷落盘叫 `update.bin`，`ShellExecuteExW(verb="open")` 按
+扩展名查文件关联；`.bin` 无关联 → `SEE_MASK_FLAG_NO_UI` 把「如何打开」
+对话框一并压掉，只剩一条日志。用户视角 = 按钮死了。顺带两个次生洞：
+`/RESTARTAPPLICATIONS` 只对安装程序**亲手关闭**的进程有效（本应用是
+自己退出的，Inno 不会重启它）；`pending-version.txt` 无条件弹「已更新」
+（取消安装后标记残留，下次启动谎报成功）。
+**修法**：`CreateProcessW` 直接拉起（不查关联表、per-user 安装本来无需
+提权动词）；载荷改名 `update.exe`（万一被 shell/资源管理器触碰也安全）；
+命令行 `/autolaunch=1` 配合 .iss `[Run]` 项（`Check: {param:autolaunch|0}`）
+在静默装完后把应用拉回来；更新标记只有版本与运行版本一致才计。
+**教训**：(1) 执行下载的二进制 = `CreateProcess`，`ShellExecute` 是给
+「用户文档」的；(2) 「装完重启应用」要靠 `[Run]+{param:}` 显式握手，
+Inno 的 RestartApplications 覆盖不到自己退出的进程；(3) 持久标记必须
+与可验证的终态比对，存在性不等于成功。E2E：`bench --update-e2e` +
+本地 manifest 可全链路复现（见 test-suite.md 回归门）。
