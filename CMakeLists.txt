@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.14)
 
+if(POLICY CMP0092)
+    # Let our explicit /W4 be the only warning flag; with the OLD behavior
+    # CMake prepends /W3 and every TU prints D9025 "overriding /W3 with /W4".
+    # Must run before project(): that is when CMAKE_C_FLAGS gets populated.
+    cmake_policy(SET CMP0092 NEW)
+endif()
+
 project(anime_denoise
     VERSION 1.1.5
     DESCRIPTION "Anime Denoise: native CUI app, ONNX Runtime inference"
@@ -17,6 +24,11 @@ set(CUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(CUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(third_party/CUI)
+if(MSVC)
+    # cui_viz.c trips C4457 (shadowed parameter) under the /W4 we impose;
+    # silence it on the vendored target rather than in upstream sources.
+    target_compile_options(cui PRIVATE /wd4457)
+endif()
 
 # Everything but the entry point lives in a static library, so the benchmark
 # project (lab/测试工程) can drive the same UI code without a window.
@@ -48,12 +60,16 @@ target_include_directories(anime_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # Native denoise engine (Phase 2): ONNX Runtime + DirectML inference,
 # Pillow-exact resampling and the L0 pass. Standalone static library: it does
 # not depend on the UI; models.c's download path reuses the updater's WinHTTP
-# + SHA-256 helpers (linked from anime_core / CUI at exe link time).
+# helper (linked from anime_core / CUI at exe link time). plat_win.c is the
+# Win32 half of the platform seam (src/plat.h); sha256.c is the shared digest
+# that replaced models.c's BCrypt call so the POSIX build uses the same code.
 add_library(anime_engine STATIC
     src/engine/engine.c
     src/engine/l0.c
     src/engine/models.c
     src/engine/resample.c
+    src/plat_win.c
+    src/sha256.c
     third_party/pocketfft/pocketfft_double.c)
 
 target_include_directories(anime_engine PUBLIC
