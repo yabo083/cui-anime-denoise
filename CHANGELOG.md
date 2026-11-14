@@ -6,10 +6,18 @@
 ## [Unreleased]
 
 ### 新增
-- `anime-denoise` CLI 与推理引擎移植到 Linux x86_64（CPU 推理）：
-  `tools/Makefile.posix` 无 CMake 构建（gcc -O2 -Wall -Wextra 零警告），
-  运行时 `dlopen` `libonnxruntime.so`；`--device gpu|auto` 自动说明并
-  回退 CPU（DirectML 仍为 Windows 专属，Windows 行为不变）。
+- `anime-denoise` CLI 与推理引擎移植到 Linux x86_64：
+  `tools/Makefile.posix` 无 CMake 构建（gcc -O2 -Wall -Wextra -pthread
+  零警告），运行时 `dlopen` `libonnxruntime.so`。
+- POSIX GPU 推理：ONNX Runtime **CUDA EP**。`eng_create` 经
+  `GetEpDevices` 探测 `CUDAExecutionProvider` 设备（命中即驱动+provider
+  可用），session 用 `AppendExecutionProvider_V2` 追加；无 CUDA 时
+  `--device gpu|auto` 一行说明回退 CPU、JSON 报 `"cpu"`，有 CUDA 时报
+  `"cuda:<adapter>"`（DirectML 仍为 Windows 专属，行为不变）。CUGAN
+  与 Windows 一致固定 CPU。
+- `setup.sh` 按 `/dev/nvidia*`|`nvidia-smi` 自动选择 ORT
+  `linux-x64(-gpu)` 包（`ORT_RUNTIME=cpu|gpu` 强制），tar 有 pinned
+  sha256 校验，.so 原子暂存。
 - 新增平台缝 `src/plat.h`（路径/文件/目录扫描/线程/原子/时钟/dlopen），
   实现分 `src/plat_win.c`（原 Win32 语义）与 `src/posix/plat_posix.c`；
   `engine.c`/`l0.c`/`models.c`/CLI 共用单一代码路径。
@@ -23,6 +31,20 @@
   下载 ONNX Runtime 1.24.4 → 构建 → 摆放 runtime/models/assets）。
 
 ### 修复
+- `--download` 在全新环境失败：`user_models_dir` 的父级不存在时 curl
+  无法落盘（CLI 两侧平台都中；GUI 因 denoiser 预建目录未中）。CLI 现在
+  下载前 `mkdir -p`。
+- `--all` 每张图泄漏一个 RGBA 缓冲：`sheet_cells[7]`（第七种方法结果）
+  释放循环边界差一。
+- POSIX 下载中途无限挂起：curl 仅有 `--connect-timeout`，补上
+  `--speed-limit/--speed-time` 传输停滞超时（对齐 WinHTTP 接收超时）。
+- CMYK JPEG 解码成花图：stb 返回原始 CMYK 通道，现按 WIC 朴素回退
+  `255-min(255,C+K)` 转换、alpha 置不透明。
+- JPEG marker 扫描不跳过 0xFF 填充字节（ICC/EXIF 提取在带填充的文件上
+  失同步）；ICC APP2 去重 `seq_no`，杜绝重复段拼出错误 profile。
+- `plat_thread_join` 缺 NULL 守卫（对齐 `plat_win`）；`o->inputs` 与
+  单文件 `files` 的 calloc 未判空；`--` 结束选项标记；>2 GiB 文件读入
+  提前失败（stb 长度是 int）。
 - 构建输出零警告：CMP0092 去掉 CMake 注入的 `/W3`（此前每个 TU 都报
   D9025），vendored CUI 的 C4457 按目标静默（与 pocketfft 的 /wd 同法）。
 

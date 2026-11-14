@@ -54,13 +54,17 @@ setup.sh` 一键完成 ONNX Runtime 下载、构建与目录摆放。
 
 与 Windows 版的行为差异（仅平台使然，输出语义一致）：
 
-- **仅 CPU**：`--device gpu|auto` 打印一行说明后按 CPU 运行；
-  `--json` 的 `device` 恒为 `"cpu"`。
+- **GPU 为 CUDA EP**：staged 的运行时是 `linux-x64-gpu` 包且主机有
+  NVIDIA GPU 时，`--device gpu|auto` 用 CUDA 执行提供器，JSON 报告
+  `"cuda:<adapter>"`；否则一行说明后回退 CPU、`device` 为 `"cpu"`。
+  `setup.sh` 检测到 `/dev/nvidia*` 或 `nvidia-smi` 会自动选 gpu 包
+  （`ORT_RUNTIME=cpu|gpu` 可强制）。CUGAN 与 Windows 一样固定 CPU。
 - **图像 I/O 走 stb**（`src/posix/img_posix.c`）：PNG/JPEG/BMP/TGA/GIF
   解码 RGBA，PNG/JPEG 编码；WebP/AVIF/TIFF/HEIF 本版不解（stb 不支持，
   WIC 独有），解码失败即正常报错。PNG iCCP、JPEG APP2 ICC、JPEG EXIF
   方向、alpha、16-bit 输入（按 `v/257+0.5` 缩放）全部保留——与 WIC
-  路径逐项对齐。
+  路径逐项对齐；CMYK JPEG 按 `255-min(255,C+K)` 朴素转换（同 WIC
+  无色彩配置时的回退）。
 - **sheet 标签**用 stb_truetype 渲染 `assets/fonts/NotoSansSC-Medium.ttf`；
   字体缺失时留空标签，不报错。
 - **路径**为 UTF-8 `char`（Windows 为 `wchar_t`）；`--models` 默认
