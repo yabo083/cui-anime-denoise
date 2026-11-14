@@ -6,33 +6,32 @@
  * load check looks for, and the download only counts as complete once the
  * bundled skeleton has been copied next to the fresh .pth.
  *
- * Downloads reuse the updater's WinHTTP helper (system proxy, streaming
- * SHA-256, progress); CUGAN arrives as a zip -- the one member whose name ends
- * with the .pth file name is extracted (stored or raw-DEFLATE via CUI's
- * bounds-checked inflate) and verified against the reference's SHA-256 table,
- * exactly like denoise.py's fetch().
+ * Downloads reuse the updater's fetch helper (WinHTTP on Windows, a curl
+ * child process on POSIX): streaming progress, pinned SHA-256 verify;
+ * CUGAN arrives as a zip -- the one member whose name ends with the .pth
+ * file name is extracted (stored or raw-DEFLATE via CUI's bounds-checked
+ * inflate) and verified against the reference's SHA-256 table, exactly
+ * like denoise.py's fetch(). The digest itself is the shared eng_sha256
+ * (src/sha256.c) on both platforms.
  *
  * Cancel note: `cancel` is checked between download/extract stages; the
- * helper's own stream loop cannot be interrupted mid-flight (it answers the
- * updater's stop flag instead).
+ * helper's own transfer loop cannot be interrupted mid-flight (it answers
+ * the embedding executable's stop flag instead).
  */
 #include "engine.h"
+#include "../plat.h"
+#include "../sha256.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
+#ifdef _WIN32
+#include "../update_priv.h"   /* WinHTTP: upd__download_to_file + upd__hex_equal */
+#else
+#include "../posix/upd_posix.h"   /* curl child: same two upd__ symbols */
 #endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <bcrypt.h>
-
-#include "../update_priv.h"
 
 /* from third_party/CUI/src/cui_inflate.c: raw DEFLATE, bounds-checked;
  * returns bytes written, 0 on corrupt input (and 0 for empty output, which
@@ -86,38 +85,21 @@ static const model_def *find_def(eng_model m) {
     return NULL;
 }
 
-static wchar_t *join_path(const wchar_t *dir, const char *name_utf8) {
-    wchar_t wname[260];
-    size_t dl, nl;
-    wchar_t *p;
+static eng_path_t *join_path(const eng_path_t *dir, const char *name_utf8) {
     if (!dir) {
         return NULL;
     }
-    if (!upd__to_wide(name_utf8, wname, sizeof(wname) / sizeof(wchar_t))) {
-        return NULL;
-    }
-    dl = wcslen(dir);
-    nl = wcslen(wname);
-    p = (wchar_t *)malloc((dl + nl + 2) * sizeof(wchar_t));
-    if (!p) {
-        return NULL;
-    }
-    memcpy(p, dir, dl * sizeof(wchar_t));
-    if (dl && p[dl - 1] != L'\\' && p[dl - 1] != L'/') {
-        p[dl++] = L'\\';
-    }
-    memcpy(p + dl, wname, (nl + 1) * sizeof(wchar_t));
-    return p;
+    return plat_join_u8(dir, name_utf8);
 }
 
-static int file_exists(const wchar_t *p) {
-    return p && GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES;
+static int file_exists(const eng_path_t *p) {
+    return p && plat_file_exists(p);
 }
 
 /* skeleton + .pth both present in `dir`; fills st fields when true. */
-static int pair_in(const model_def *d, const wchar_t *dir,
+static int pair_in(const model_def *d, const eng_path_t *dir,
                    eng_model_state *st) {
-    wchar_t *sk, *wt;
+    eng_path_t *sk, *wt;
     int ok;
     if (!dir) {
         return 0;
@@ -125,8 +107,8 @@ static int pair_in(const model_def *d, const wchar_t *dir,
     wt = join_path(dir, d->weights);
     ok = file_exists(wt);
     if (ok && st) {
-        wcsncpy(st->weights_path, wt,
-                sizeof(st->weights_path) / sizeof(wchar_t) - 1);
+        plat_sncpy(st->weights_path, wt,
+                   sizeof(st->weights_path) / sizeof(eng_path_t) - 1);
     }
     free(wt);
     if (!ok) {
@@ -156,7 +138,7 @@ void eng_model_status(const eng_config *cfg, eng_model m,
         /* bundled ESRGAN: still a file check, a broken install reports it */
         st->available = (m == ENG_M_ESRGAN);
         if (m == ENG_M_ESRGAN && cfg && cfg->models_dir) {
-            wchar_t *p = join_path(cfg->models_dir, "esrgan_anime6b_x4.onnx");
+            eng_path_t *p = join_path(cfg->models_dir, "esrgan_anime6b_x4.onnx");
             st->available = file_exists(p);
             if (!st->available) {
                 snprintf(st->missing, sizeof(st->missing),
@@ -171,21 +153,21 @@ void eng_model_status(const eng_config *cfg, eng_model m,
     st->sha256_hex = d->sha256_pth;
     st->weights_size = d->weights_size;
     if (cfg) {
-        wchar_t *p;
+        eng_path_t *p;
         /* report presence individually too */
         p = join_path(cfg->user_models_dir, d->weights);
         st->weights_present = file_exists(p);
         if (st->weights_present) {
-            wcsncpy(st->weights_path, p,
-                    sizeof(st->weights_path) / sizeof(wchar_t) - 1);
+            plat_sncpy(st->weights_path, p,
+                       sizeof(st->weights_path) / sizeof(eng_path_t) - 1);
         }
         free(p);
         if (!st->weights_present) {
             p = join_path(cfg->models_dir, d->weights);
             st->weights_present = file_exists(p);
             if (st->weights_present) {
-                wcsncpy(st->weights_path, p,
-                        sizeof(st->weights_path) / sizeof(wchar_t) - 1);
+                plat_sncpy(st->weights_path, p,
+                           sizeof(st->weights_path) / sizeof(eng_path_t) - 1);
             }
             free(p);
         }
@@ -226,41 +208,8 @@ static uint32_t rd_u32(const unsigned char *p) {
 }
 
 /* Load a whole file; returns NULL on failure. */
-static unsigned char *read_all(const wchar_t *path, size_t *out_len) {
-    HANDLE f;
-    LARGE_INTEGER sz;
-    unsigned char *buf;
-    DWORD got = 0, chunk;
-    size_t off = 0;
-
-    f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
-                    FILE_ATTRIBUTE_NORMAL, NULL);
-    if (f == INVALID_HANDLE_VALUE) {
-        return NULL;
-    }
-    if (!GetFileSizeEx(f, &sz) || sz.QuadPart > (LONGLONG)0x7fffffff) {
-        CloseHandle(f);
-        return NULL;
-    }
-    buf = (unsigned char *)malloc((size_t)sz.QuadPart ? (size_t)sz.QuadPart : 1);
-    if (!buf) {
-        CloseHandle(f);
-        return NULL;
-    }
-    while (off < (size_t)sz.QuadPart) {
-        chunk = (DWORD)((sz.QuadPart - (LONGLONG)off > 1 << 24)
-                            ? 1 << 24
-                            : sz.QuadPart - (LONGLONG)off);
-        if (!ReadFile(f, buf + off, chunk, &got, NULL) || got == 0) {
-            free(buf);
-            CloseHandle(f);
-            return NULL;
-        }
-        off += got;
-    }
-    CloseHandle(f);
-    *out_len = off;
-    return buf;
+static unsigned char *read_all(const eng_path_t *path, size_t *out_len) {
+    return plat_read_all(path, out_len);
 }
 
 /* True when zip entry name `e` ends with `suffix` (denoise.py: name ends with
@@ -372,36 +321,13 @@ static unsigned char *zip_extract(const unsigned char *zip, size_t zip_len,
     return NULL;
 }
 
-/* SHA-256 of a memory block via BCrypt. */
+/* SHA-256 of a memory block (shared vendored implementation). */
 static int mem_sha256(const unsigned char *data, size_t len, char out[65]) {
-    BCRYPT_ALG_HANDLE alg = NULL;
-    BCRYPT_HASH_HANDLE h = NULL;
-    unsigned char digest[32];
-    int ok = 0, i;
-    char *hex = NULL;
-
-    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0)) {
+    if (!data || !out) {
         return -1;
     }
-    if (BCryptCreateHash(alg, &h, NULL, 0, NULL, 0, 0)) {
-        goto end;
-    }
-    if (BCryptHashData(h, (PUCHAR)data, (ULONG)len, 0)) {
-        goto end;
-    }
-    if (BCryptFinishHash(h, digest, sizeof(digest), 0)) {
-        goto end;
-    }
-    hex = out;
-    for (i = 0; i < 32; i++) {
-        snprintf(hex + i * 2, 3, "%02x", digest[i]);
-    }
-    out[64] = 0;
-    ok = 0;
-end:
-    if (h) BCryptDestroyHash(h);
-    BCryptCloseAlgorithmProvider(alg, 0);
-    return ok;
+    eng_sha256_hex(data, len, out);
+    return 0;
 }
 
 /* ------------------------------ download --------------------------------- */
@@ -422,7 +348,7 @@ static void dl_progress(void *ctx, unsigned long long done,
 bool eng_model_pair_complete(const eng_config *cfg, eng_model m,
                              char *err, size_t cap) {
     const model_def *d = find_def(m);
-    wchar_t *w, *dst, *src;
+    eng_path_t *w, *dst, *src;
     int ok;
 
     if (!d) {
@@ -449,16 +375,19 @@ bool eng_model_pair_complete(const eng_config *cfg, eng_model m,
     if (!src || !file_exists(src)) {
         /* the weightless skeleton ships with the app; losing it is an
          * install problem, not a download problem -- say so plainly */
-        set_err(err, cap, "bundled skeleton missing: %S "
-                "(reinstall the app)", src ? src : L"");
+        char u8[600];
+        plat_path_to_u8(src ? src : PLAT_LIT(""), u8, sizeof u8);
+        set_err(err, cap, "bundled skeleton missing: %s "
+                "(reinstall the app)", u8);
         free(src);
         free(dst);
         return false;
     }
-    ok = CopyFileW(src, dst, FALSE) != 0;
+    ok = plat_copy_file(src, dst);
     if (!ok) {
-        set_err(err, cap, "cannot copy skeleton to %S (error %lu)",
-                dst, GetLastError());
+        char u8[600];
+        plat_path_to_u8(dst, u8, sizeof u8);
+        set_err(err, cap, "cannot copy skeleton to %s", u8);
     }
     free(src);
     free(dst);
@@ -467,7 +396,7 @@ bool eng_model_pair_complete(const eng_config *cfg, eng_model m,
 
 bool eng_model_delete(const eng_config *cfg, eng_model m) {
     const model_def *d = find_def(m);
-    wchar_t *p;
+    eng_path_t *p;
     int gone = 0;
 
     if (!d || !cfg || !cfg->user_models_dir) {
@@ -475,12 +404,12 @@ bool eng_model_delete(const eng_config *cfg, eng_model m) {
     }
     p = join_path(cfg->user_models_dir, d->weights);
     if (p) {
-        gone |= DeleteFileW(p) != 0;
+        gone |= plat_unlink(p);
         free(p);
     }
     p = join_path(cfg->user_models_dir, d->skel);
     if (p) {
-        gone |= DeleteFileW(p) != 0;
+        gone |= plat_unlink(p);
         free(p);
     }
     return gone != 0;
@@ -488,39 +417,26 @@ bool eng_model_delete(const eng_config *cfg, eng_model m) {
 
 /* The stored .pth already looks like the finished download: the pinned byte
  * size plus the PyTorch zip magic. A mismatch just means "fetch again". */
-static int pth_looks_done(const wchar_t *path, const model_def *d) {
-    WIN32_FILE_ATTRIBUTE_DATA fa;
+static int pth_looks_done(const eng_path_t *path, const model_def *d) {
+    unsigned long long sz = 0;
     unsigned char magic[4] = {0};
-    HANDLE f;
-    DWORD got = 0;
-    int ok = 0;
 
-    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &fa)) {
+    if (!plat_file_size(path, &sz) || sz != d->weights_size) {
         return 0;
     }
-    if ((((unsigned long long)fa.nFileSizeHigh << 32) |
-         fa.nFileSizeLow) != d->weights_size) {
+    if (!plat_read_head(path, magic, 4)) {
         return 0;
     }
-    f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
-                    FILE_ATTRIBUTE_NORMAL, NULL);
-    if (f == INVALID_HANDLE_VALUE) {
-        return 0;
-    }
-    if (ReadFile(f, magic, 4, &got, NULL) && got == 4) {
-        ok = magic[0] == 'P' && magic[1] == 'K' &&
-             magic[2] == 3 && magic[3] == 4;
-    }
-    CloseHandle(f);
-    return ok;
+    return magic[0] == 'P' && magic[1] == 'K' &&
+           magic[2] == 3 && magic[3] == 4;
 }
 
 int eng_model_download(const eng_config *cfg, eng_model m,
                        eng_dl_progress_fn cb, void *ud, volatile long *cancel,
                        char *err, size_t cap) {
     const model_def *d = find_def(m);
-    const wchar_t *user_models_dir;
-    wchar_t *dest = NULL, *tmp = NULL;
+    const eng_path_t *user_models_dir;
+    eng_path_t *dest = NULL, *tmp = NULL;
     char computed[65];
     unsigned long long got_total = 0;
     dl_ctx ctx;
@@ -540,7 +456,7 @@ int eng_model_download(const eng_config *cfg, eng_model m,
     }
     ctx.cb = cb;
     ctx.ud = ud;
-    CreateDirectoryW(user_models_dir, NULL); /* ok if it already exists */
+    plat_mkdir(user_models_dir);   /* ok if it already exists */
 
     dest = join_path(user_models_dir, d->weights);
     tmp = join_path(user_models_dir, d->is_zip ? "weights_download.zip.tmp"
@@ -586,8 +502,6 @@ int eng_model_download(const eng_config *cfg, eng_model m,
         unsigned char *zb = read_all(tmp, &zl);
         unsigned char *mb = NULL;
         char hex[65];
-        HANDLE f = INVALID_HANDLE_VALUE;
-        DWORD wrote = 0;
         if (!zb) {
             set_err(err, cap, "cannot read downloaded zip");
             goto end;
@@ -602,32 +516,23 @@ int eng_model_download(const eng_config *cfg, eng_model m,
             set_err(err, cap, "SHA-256 mismatch on extracted member");
             goto end;
         }
-        f = CreateFileW(dest, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                        FILE_ATTRIBUTE_NORMAL, NULL);
-        if (f == INVALID_HANDLE_VALUE) {
+        if (!plat_write_all(dest, mb, ml)) {
+            char u8[600];
+            plat_path_to_u8(dest, u8, sizeof u8);
             free(mb);
-            set_err(err, cap, "cannot create %S (error %lu)", dest,
-                    GetLastError());
+            set_err(err, cap, "cannot write %s", u8);
             goto end;
         }
-        if (!WriteFile(f, mb, (DWORD)ml, &wrote, NULL) || wrote != ml) {
-            CloseHandle(f);
-            DeleteFileW(dest);
-            free(mb);
-            set_err(err, cap, "cannot write %S", dest);
-            goto end;
-        }
-        CloseHandle(f);
         free(mb);
         if (cb) {
             cb(ud, ml, ml);
         }
     } else {
         /* the .pth is already hash-verified by the helper: rename into place */
-        DeleteFileW(dest);
-        if (!MoveFileW(tmp, dest)) {
-            set_err(err, cap, "cannot rename %S (error %lu)", dest,
-                    GetLastError());
+        if (!plat_rename(tmp, dest)) {
+            char u8[600];
+            plat_path_to_u8(dest, u8, sizeof u8);
+            set_err(err, cap, "cannot rename %s", u8);
             goto end;
         }
     }
@@ -638,14 +543,14 @@ int eng_model_download(const eng_config *cfg, eng_model m,
      * eng_model_status) until the pair is co-located. Roll the .pth back
      * out on failure rather than leave the broken half-state behind. */
     if (!eng_model_pair_complete(cfg, m, err, cap)) {
-        DeleteFileW(dest);
+        plat_unlink(dest);
         goto end;
     }
     ret = 0;
 
 end:
-    if (tmp && GetFileAttributesW(tmp) != INVALID_FILE_ATTRIBUTES) {
-        DeleteFileW(tmp);
+    if (tmp) {
+        plat_unlink(tmp);   /* ENOENT is fine */
     }
     free(dest);
     free(tmp);
