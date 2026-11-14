@@ -301,3 +301,20 @@ hover 读取也都是 modal 盲的。手画命中层不会自动知道 CUI 的�
 **教训**：① 所有权移交的审计模式是"找出所有写 p = new_owner 的点，
    问旧值谁放"；② 状态机里「already up」与「正在死」共用一个
    alive 标志就是谎报源——生死之间必须有一个可判别的中间态。
+
+## L-028 POSIX 移植：bool/errno 两套真值约定，逐一核对
+
+**现象**：APISR 下载明明把 .pth rename 到位，CLI 却报
+"cannot rename ... download failed"。
+**根因**：`plat_rename` 契约是「返回 true = 成功」（沿用
+MoveFileEx 的 bool 语义），移植时误写成 `if (plat_rename(...))`
+报错分支——rename 真成功后走错误路径。同类函数
+（plat_unlink「删掉了才 true」、plat_read_head、plat_file_size）
+与 errno 风（plat_thread_spawn 0=成功）两套约定并存于 plat.h，
+逐处核对前很容易写反。
+**修法**：`if (!plat_rename(...))`；并把每个 plat_* 返回值约定写进
+plat.h 注释——移植期审计清单第一条就是「所有 plat_ 布尔调用点
+真值表逐一对照」。
+**教训**：跨平台缝把「bool 成功」与「0 成功」两种风格收进同一头
+文件时，编译器查不出极性；只能靠契约注释 + 调用点逐一核对 +
+端到端跑一次（下载报错的文件其实已就位——输出与报错矛盾即信号）。
