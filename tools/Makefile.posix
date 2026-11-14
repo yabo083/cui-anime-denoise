@@ -1,0 +1,65 @@
+# Makefile.posix -- the no-CMake POSIX build of the anime-denoise CLI
+# (Linux x86_64; developed against Ubuntu 24.04 / gcc 13.3).
+#
+#   make -f tools/Makefile.posix [-j$(nproc)]
+#
+# Output: build-posix/anime-denoise. Like the Windows build it expects
+# runtime/ (libonnxruntime.so) and models/ as siblings of the executable,
+# resolved from /proc/self/exe -- see servers/bren9np/anime-denoise/.
+#
+# Same translation units as the CMake anime-denoise target minus the
+# Windows-only backends: src/img.c (WIC) -> src/posix/img_posix.c (stb),
+# src/update_io.c (WinHTTP) -> src/posix/download_curl.c (curl child),
+# src/img_clip.c (clipboard) is not needed by the CLI at all, and the
+# platform seam (src/plat.h) resolves to src/posix/plat_posix.c instead of
+# src/plat_win.c.
+
+CC       ?= gcc
+ROOT     := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
+OUT      ?= $(ROOT)/build-posix
+VERSION  ?= 1.1.6
+
+CPPFLAGS += -I$(ROOT)/src \
+            -I$(ROOT)/third_party/onnxruntime/include \
+            -I$(ROOT)/third_party/pocketfft \
+            -I$(ROOT)/third_party/CUI/src \
+            -I$(ROOT)/third_party/CUI/include \
+            -D_DEFAULT_SOURCE -D_FILE_OFFSET_BITS=64 \
+            -DAPP_VERSION='"$(VERSION)"'
+
+CFLAGS   ?= -O2 -std=c11 -Wall -Wextra
+LDLIBS   += -ldl -lpthread -lm
+
+SRCS := src/engine/engine.c \
+        src/engine/l0.c \
+        src/engine/models.c \
+        src/engine/resample.c \
+        src/posix/plat_posix.c \
+        src/posix/download_curl.c \
+        src/posix/img_posix.c \
+        src/sha256.c \
+        src/img_common.c \
+        src/cli/main.c \
+        src/cli/sheet.c \
+        third_party/pocketfft/pocketfft_double.c \
+        third_party/CUI/src/cui_inflate.c
+
+OBJS := $(addprefix $(OUT)/obj/,$(SRCS:.c=.o))
+
+$(OUT)/anime-denoise: $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS) $(LDLIBS)
+
+$(OUT)/obj/%.o: $(ROOT)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+# Vendored third-party files stay byte-identical to upstream, so warnings
+# they would emit under -Wall -Wextra are silenced per-object instead of by
+# editing the sources (the CMake build does the same with /wd flags).
+$(OUT)/obj/third_party/CUI/src/cui_inflate.o: CFLAGS += -w
+$(OUT)/obj/third_party/pocketfft/pocketfft_double.o: CFLAGS += -w
+
+clean:
+	rm -rf $(OUT)
+
+.PHONY: clean
