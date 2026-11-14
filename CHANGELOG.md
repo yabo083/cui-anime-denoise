@@ -3,7 +3,7 @@
 本项目版本与 GitHub Release 一一对应；GUI 内自动更新读取 Release 资产
 `update.json`（`releases/latest/download/` 始终指向最新版）。
 
-## [Unreleased]
+## [1.1.6]
 
 ### 新增
 - `anime-denoise` CLI 与推理引擎移植到 Linux x86_64：
