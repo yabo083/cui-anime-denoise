@@ -8,7 +8,7 @@ if(POLICY CMP0092)
 endif()
 
 project(anime_denoise
-    VERSION 1.1.7
+    VERSION 1.1.8
     DESCRIPTION "Anime Denoise: native CUI app, ONNX Runtime inference"
     LANGUAGES C RC)
 
