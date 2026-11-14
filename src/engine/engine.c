@@ -9,8 +9,14 @@
  * CPU EP whole-image (the DML EP produces wrong output for its graph at every
  * size -- measured in Phase 1). Any DML failure at session creation or during
  * the 64x64 sanity tile falls back to the CPU EP and sets eng_note().
+ *
+ * POSIX (Linux x86_64): DirectML does not exist, so every device maps to the
+ * CPU EP -- AUTO silently, GPU with an eng_note() like the DML-fallback one.
+ * The runtime is libonnxruntime.so resolved from cfg->runtime_dir first and
+ * the loader's default search path second.
  */
 #include "engine.h"
+#include "../plat.h"
 
 #include <math.h>
 #include <stdarg.h>
@@ -18,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -27,11 +34,15 @@
 #include <windows.h>
 #include <dxgi1_6.h>
 
-#include "../../third_party/onnxruntime/include/onnxruntime_c_api.h"
 #include "../../third_party/onnxruntime/include/dml_provider_factory.h"
 
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "dxguid.lib")
+#else
+typedef struct OrtDmlApi OrtDmlApi;   /* field type only; stays NULL here */
+#endif
+
+#include "../../third_party/onnxruntime/include/onnxruntime_c_api.h"
 
 #define ENG_PAD 64            /* >= RRDB receptive field; verified bit-exact */
 #define ENG_TILE_LO 256
@@ -49,7 +60,7 @@ typedef struct {
 
 struct eng {
     eng_config cfg;
-    HMODULE ort_dll;
+    void *ort_dll;
     const OrtApi *api;
     const OrtDmlApi *dml;
     OrtEnv *env;
@@ -116,24 +127,10 @@ int eng_round_half_even(double x) {
     return (int)llrint(x);
 }
 
-static wchar_t *join_path(const wchar_t *dir, const wchar_t *name) {
-    size_t dl = dir ? wcslen(dir) : 0;
-    size_t nl = wcslen(name);
-    wchar_t *p = (wchar_t *)malloc((dl + nl + 2) * sizeof(wchar_t));
-    if (!p) {
-        return NULL;
-    }
-    memcpy(p, dir, dl * sizeof(wchar_t));
-    if (dl && p[dl - 1] != L'\\' && p[dl - 1] != L'/') {
-        p[dl++] = L'\\';
-    }
-    memcpy(p + dl, name, (nl + 1) * sizeof(wchar_t));
-    return p;
-}
-
 /* ------------------------- device enumeration ---------------------------- */
 
 static void eng_find_adapter(eng *e) {
+#ifdef _WIN32
     IDXGIFactory6 *fac = NULL;
     HRESULT hr;
     UINT i;
@@ -183,15 +180,27 @@ static void eng_find_adapter(eng *e) {
         break;
     }
     fac->lpVtbl->Release(fac);
+#else
+    /* POSIX: no DXGI, no adapter -- CPU only, so nothing to enumerate. */
+    e->vram_free = 0;
+    e->adapter[0] = 0;
+    e->adapter_w[0] = 0;
+#endif
 }
 
 /* --------------------------- create / destroy ----------------------------- */
 
+#ifdef _WIN32
+typedef const OrtApiBase *(WINAPI *eng_apibase_fn)(void);
+#else
+typedef const OrtApiBase *(*eng_apibase_fn)(void);
+#endif
+
 eng *eng_create(const eng_config *cfg, char *err, size_t cap) {
     eng *e;
-    wchar_t *dllpath;
+    eng_path_t *dllpath;
     const OrtApiBase *base = NULL;
-    const OrtApiBase *(WINAPI *get_base)(void);
+    eng_apibase_fn get_base;
     OrtStatus *st;
 
     if (!cfg || !cfg->runtime_dir || !cfg->models_dir) {
@@ -205,70 +214,94 @@ eng *eng_create(const eng_config *cfg, char *err, size_t cap) {
     }
     e->cfg = *cfg;
     e->want_gpu = (cfg->device != ENG_DEV_CPU);
-    if (cfg->threads > 0) {
-        e->nthreads = cfg->threads;
-    } else {
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        e->nthreads = (int)si.dwNumberOfProcessors;
-        if (e->nthreads < 1) {
-            e->nthreads = 1;
-        }
-    }
+    e->nthreads = cfg->threads > 0 ? cfg->threads : plat_num_cpus();
     eng_find_adapter(e);
     e->tile_size = e->vram_free >= ENG_VRAM_HI   ? ENG_TILE_HI
                    : e->vram_free >= ENG_VRAM_MID ? ENG_TILE_MID
                                                  : ENG_TILE_LO;
 
-    dllpath = join_path(cfg->runtime_dir, L"onnxruntime.dll");
+#ifdef _WIN32
+    dllpath = plat_join_path(cfg->runtime_dir, L"onnxruntime.dll");
+#else
+    dllpath = plat_join_path(cfg->runtime_dir, PLAT_LIT("libonnxruntime.so"));
+#endif
     if (!dllpath) {
         free(e);
         set_err(err, cap, "out of memory");
         return NULL;
     }
-    /* Full path + DLL-load dir: never pick up the System32 onnxruntime.dll
-     * and resolve onnxruntime_providers_shared.dll / DirectML.dll from the
-     * same folder. */
-    e->ort_dll = LoadLibraryExW(
-        dllpath, NULL,
-        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    e->ort_dll = plat_dlopen(dllpath);
+#ifndef _WIN32
+    if (!e->ort_dll) {
+        /* Not staged next to the binary: let the loader fall back to the
+         * system search path (LD_LIBRARY_PATH / ldconfig), like a normal
+         * shared library dependency. */
+        e->ort_dll = plat_dlopen(PLAT_LIT("libonnxruntime.so"));
+    }
+#endif
     free(dllpath);
     if (!e->ort_dll) {
-        DWORD le = GetLastError();
         free(e);
+#ifdef _WIN32
         set_err(err, cap,
                 "onnxruntime.dll not found or failed to load (0x%lx): "
                 "run tools/fetch_deps.ps1 and rebuild so <exe>\\runtime\\ "
                 "contains onnxruntime.dll + DirectML.dll",
-                (unsigned long)le);
+                (unsigned long)GetLastError());
+#else
+        set_err(err, cap,
+                "libonnxruntime.so not found or failed to load: place it in "
+                "<exe>/runtime/ or on the loader search path");
+#endif
         return NULL;
     }
-    get_base = (const OrtApiBase *(WINAPI *)(void))GetProcAddress(
-        e->ort_dll, "OrtGetApiBase");
+    get_base = (eng_apibase_fn)plat_dlsym(e->ort_dll, "OrtGetApiBase");
     if (!get_base || !(base = get_base())) {
-        FreeLibrary(e->ort_dll);
+        plat_dlclose(e->ort_dll);
         free(e);
+#ifdef _WIN32
         set_err(err, cap, "OrtGetApiBase not found in onnxruntime.dll");
+#else
+        set_err(err, cap, "OrtGetApiBase not found in libonnxruntime.so");
+#endif
         return NULL;
     }
     e->api = base->GetApi(ORT_API_VERSION);
     if (!e->api) {
-        FreeLibrary(e->ort_dll);
+        plat_dlclose(e->ort_dll);
         free(e);
-        set_err(err, cap, "onnxruntime.dll does not expose ORT API %u",
+        set_err(err, cap, "%s does not expose ORT API %u",
+#ifdef _WIN32
+                "onnxruntime.dll",
+#else
+                "libonnxruntime.so",
+#endif
                 (unsigned)ORT_API_VERSION);
         return NULL;
     }
     e->dml = NULL;
+#ifdef _WIN32
     if (e->api->GetExecutionProviderApi) {
         e->api->GetExecutionProviderApi("DML", ORT_API_VERSION,
                                         (const void **)&e->dml);
         /* failure is non-fatal: DML EP may just be absent */
     }
+#else
+    if (cfg->device == ENG_DEV_GPU) {
+        /* same semantics as the DML-fallback note: the GPU was asked for
+         * and cannot be used -- say so in the user's language */
+        snprintf(e->note, sizeof(e->note),
+                 "DirectML \xE5\x9C\xA8\xE6\xAD\xA4\xE5\xB9\xB3\xE5\x8F\xB0"
+                 "\xE4\xB8\x8D\xE5\x8F\xAF\xE7\x94\xA8\xEF\xBC\x8C\xE5\xB7\xB2"
+                 "\xE6\x94\xB9\xE7\x94\xA8 CPU\xEF\xBC\x9B\xE9\x80\x9F\xE5\xBA"
+                 "\xA6\xE4\xBC\x9A\xE6\x85\xA2\xE4\xB8\x80\xE4\xBA\x9B\xE3\x80"
+                 "\x82");
+    }
+#endif
     st = e->api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "anime_engine", &e->env);
     if (st) {
         ort_err(e, err, cap, "CreateEnv", st);
-        FreeLibrary(e->ort_dll);
+        plat_dlclose(e->ort_dll);
         free(e);
         return NULL;
     }
@@ -277,7 +310,7 @@ eng *eng_create(const eng_config *cfg, char *err, size_t cap) {
     if (st) {
         ort_err(e, err, cap, "CreateCpuMemoryInfo", st);
         e->api->ReleaseEnv(e->env);
-        FreeLibrary(e->ort_dll);
+        plat_dlclose(e->ort_dll);
         free(e);
         return NULL;
     }
@@ -302,7 +335,7 @@ void eng_destroy(eng *e) {
         e->api->ReleaseEnv(e->env);
     }
     if (e->ort_dll) {
-        FreeLibrary(e->ort_dll);
+        plat_dlclose(e->ort_dll);
     }
     free(e);
 }
@@ -334,11 +367,11 @@ const char *eng_note(const eng *e) {
 
 /* ------------------------------ sessions ---------------------------------- */
 
-static const wchar_t *model_file(eng_model m) {
+static const eng_path_t *model_file(eng_model m) {
     switch (m) {
-        case ENG_M_ESRGAN: return L"esrgan_anime6b_x4.onnx";
-        case ENG_M_CUGAN:  return L"cugan_up2x_denoise3x.skel.onnx";
-        case ENG_M_APISR:  return L"apisr_rrdb_x2.skel.onnx";
+        case ENG_M_ESRGAN: return PLAT_LIT("esrgan_anime6b_x4.onnx");
+        case ENG_M_CUGAN:  return PLAT_LIT("cugan_up2x_denoise3x.skel.onnx");
+        case ENG_M_APISR:  return PLAT_LIT("apisr_rrdb_x2.skel.onnx");
         default:           return NULL;
     }
 }
@@ -353,30 +386,30 @@ static int model_scale(eng_model m) {
 }
 
 /* The .pth a skeleton reads as external data (must sit next to the .onnx). */
-static const wchar_t *model_weights(eng_model m) {
+static const eng_path_t *model_weights(eng_model m) {
     switch (m) {
-        case ENG_M_CUGAN: return L"up2x-latest-denoise3x.pth";
-        case ENG_M_APISR: return L"2x_APISR_RRDB_GAN_generator.pth";
+        case ENG_M_CUGAN: return PLAT_LIT("up2x-latest-denoise3x.pth");
+        case ENG_M_APISR: return PLAT_LIT("2x_APISR_RRDB_GAN_generator.pth");
         default:          return NULL;
     }
 }
 
 /* skeleton + its .pth present as a pair in `dir`? */
-static int skel_pair_in(const wchar_t *dir, const wchar_t *skel,
-                        const wchar_t *pth) {
-    wchar_t *p;
+static int skel_pair_in(const eng_path_t *dir, const eng_path_t *skel,
+                        const eng_path_t *pth) {
+    eng_path_t *p;
     int ok;
     if (!dir || !pth) {
         return 0;
     }
-    p = join_path(dir, skel);
-    ok = p && GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES;
+    p = plat_join_path(dir, skel);
+    ok = p && plat_file_exists(p);
     free(p);
     if (!ok) {
         return 0;
     }
-    p = join_path(dir, pth);
-    ok = p && GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES;
+    p = plat_join_path(dir, pth);
+    ok = p && plat_file_exists(p);
     free(p);
     return ok;
 }
@@ -384,16 +417,16 @@ static int skel_pair_in(const wchar_t *dir, const wchar_t *skel,
 /* Locate the model file: skeletons look in user_models_dir first, then
  * models_dir; the bundled ESRGAN lives in models_dir. Returns malloc'ed path
  * or NULL. For skeletons the .pth must sit next to the .onnx. */
-static wchar_t *find_model(eng *e, eng_model m, char *err, size_t cap) {
-    const wchar_t *fn = model_file(m);
-    wchar_t *p;
+static eng_path_t *find_model(eng *e, eng_model m, char *err, size_t cap) {
+    const eng_path_t *fn = model_file(m);
+    eng_path_t *p;
     if (!fn) {
         set_err(err, cap, "no model file for model %d", (int)m);
         return NULL;
     }
     if (m == ENG_M_ESRGAN) {
-        p = join_path(e->cfg.models_dir, fn);
-        if (p && GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES) {
+        p = plat_join_path(e->cfg.models_dir, fn);
+        if (p && plat_file_exists(p)) {
             return p;
         }
         free(p);
@@ -404,21 +437,26 @@ static wchar_t *find_model(eng *e, eng_model m, char *err, size_t cap) {
     /* skeletons resolve external weights relative to the .onnx location, so
      * the .skel.onnx and its .pth must live in the same directory */
     {
-        const wchar_t *pth = model_weights(m);
+        const eng_path_t *pth = model_weights(m);
         if (skel_pair_in(e->cfg.user_models_dir, fn, pth)) {
-            return join_path(e->cfg.user_models_dir, fn);
+            return plat_join_path(e->cfg.user_models_dir, fn);
         }
         if (skel_pair_in(e->cfg.models_dir, fn, pth)) {
-            return join_path(e->cfg.models_dir, fn);
+            return plat_join_path(e->cfg.models_dir, fn);
         }
     }
-    set_err(err, cap,
-            "%S + %S pair not found in user_models_dir or models_dir",
-            fn, model_weights(m));
+    {
+        char a[600], b[600];
+        plat_path_to_u8(fn, a, sizeof a);
+        plat_path_to_u8(model_weights(m), b, sizeof b);
+        set_err(err, cap,
+                "%s + %s pair not found in user_models_dir or models_dir",
+                a, b);
+    }
     return NULL;
 }
 
-static OrtSession *new_session(eng *e, const wchar_t *path, int gpu,
+static OrtSession *new_session(eng *e, const eng_path_t *path, int gpu,
                                char *err, size_t cap) {
     OrtSessionOptions *so = NULL;
     OrtSession *sess = NULL;
@@ -429,7 +467,13 @@ static OrtSession *new_session(eng *e, const wchar_t *path, int gpu,
         ort_err(e, err, cap, "CreateSessionOptions", st);
         return NULL;
     }
-    e->api->SetIntraOpNumThreads(so, e->nthreads);
+    st = e->api->SetIntraOpNumThreads(so, e->nthreads);
+    if (st) {
+        /* non-fatal: a runtime that refuses thread count keeps its default */
+        e->api->ReleaseStatus(st);
+        st = NULL;
+    }
+#ifdef _WIN32
     if (gpu) {
         OrtDmlDeviceOptions opts;
         /* DML requires the memory pattern off and sequential execution. */
@@ -444,6 +488,9 @@ static OrtSession *new_session(eng *e, const wchar_t *path, int gpu,
             return NULL;
         }
     }
+#else
+    (void)gpu;   /* POSIX callers can only ever pass 0 (e->dml is NULL) */
+#endif
     st = e->api->CreateSession(e->env, path, so, &sess);
     e->api->ReleaseSessionOptions(so);
     if (st) {
@@ -460,7 +507,8 @@ static int sanity_tile(eng *e, OrtSession *sess, int scale) {
     float *in;
     OrtValue *tin = NULL, *tout = NULL;
     int64_t dims[4] = {1, 3, n, n};
-    const char *names_in[] = {"input"}, *names_out[] = {"output"};
+    const char *const names_in[] = {"input"};
+    const char *const names_out[] = {"output"};
     OrtStatus *st;
     float *y;
     size_t i, count;
@@ -481,7 +529,8 @@ static int sanity_tile(eng *e, OrtSession *sess, int scale) {
         free(in);
         return 0;
     }
-    st = e->api->Run(sess, NULL, names_in, &tin, 1, names_out, 1, &tout);
+    st = e->api->Run(sess, NULL, names_in,
+                     (const OrtValue *const *)&tin, 1, names_out, 1, &tout);
     free(in);
     e->api->ReleaseValue(tin);
     if (st) {
@@ -507,7 +556,7 @@ static int sanity_tile(eng *e, OrtSession *sess, int scale) {
 }
 
 bool eng_prepare(eng *e, eng_model m, char *err, size_t cap) {
-    wchar_t *path;
+    eng_path_t *path;
     eng_sess *s;
     int gpu;
 
@@ -615,7 +664,8 @@ static int run_one(eng *e, eng_sess *s, const float *in, int iw, int ih,
                    OrtValue **out, char *err, size_t cap) {
     OrtValue *tin = NULL, *tout = NULL;
     int64_t dims[4] = {1, 3, ih, iw};
-    const char *names_in[] = {"input"}, *names_out[] = {"output"};
+    const char *const names_in[] = {"input"};
+    const char *const names_out[] = {"output"};
     OrtStatus *st;
 
     st = e->api->CreateTensorWithDataAsOrtValue(
@@ -625,7 +675,8 @@ static int run_one(eng *e, eng_sess *s, const float *in, int iw, int ih,
         ort_err(e, err, cap, "CreateTensor", st);
         return -1;
     }
-    st = e->api->Run(s->sess, NULL, names_in, &tin, 1, names_out, 1, &tout);
+    st = e->api->Run(s->sess, NULL, names_in,
+                     (const OrtValue *const *)&tin, 1, names_out, 1, &tout);
     e->api->ReleaseValue(tin);
     if (st) {
         ort_err(e, err, cap, "OrtSession::Run", st);
@@ -644,11 +695,20 @@ static int out_dims(eng *e, OrtValue *v, int *h, int *w) {
         e->api->ReleaseStatus(st);
         return -1;
     }
-    e->api->GetDimensionsCount(ti, &nd);
+    st = e->api->GetDimensionsCount(ti, &nd);
+    if (st) {
+        e->api->ReleaseStatus(st);
+        nd = 0;
+    }
     if (nd >= 4) {
-        e->api->GetDimensions(ti, dims, nd);
-        *h = (int)dims[2];
-        *w = (int)dims[3];
+        st = e->api->GetDimensions(ti, dims, nd);
+        if (st) {
+            e->api->ReleaseStatus(st);
+            nd = 0;
+        } else {
+            *h = (int)dims[2];
+            *w = (int)dims[3];
+        }
     }
     e->api->ReleaseTensorTypeAndShapeInfo(ti);
     return nd >= 4 ? 0 : -1;

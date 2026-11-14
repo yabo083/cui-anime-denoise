@@ -21,6 +21,17 @@
 extern "C" {
 #endif
 
+/* Filesystem path in the platform encoding: UTF-16 (wchar_t) on Windows,
+ * UTF-8 (char) on POSIX. Callers keep writing wchar_t on Windows --
+ * eng_path_t IS wchar_t there, so the public surface is unchanged. On
+ * POSIX it matches ORTCHAR_T (char), which is what the ORT C API expects
+ * for session paths on both platforms. */
+#ifdef _WIN32
+typedef wchar_t eng_path_t;
+#else
+typedef char eng_path_t;
+#endif
+
 typedef enum { ENG_DEV_AUTO = 0, ENG_DEV_GPU, ENG_DEV_CPU } eng_device;
 typedef enum {
     ENG_M_ESRGAN = 0,
@@ -39,9 +50,10 @@ typedef struct {
 } eng_params;
 
 typedef struct {
-    const wchar_t *runtime_dir;      /* dir holding onnxruntime.dll + DirectML.dll */
-    const wchar_t *models_dir;       /* bundled models (esrgan + skeletons) */
-    const wchar_t *user_models_dir;  /* downloaded .pth + skeletons, may be NULL */
+    const eng_path_t *runtime_dir;      /* dir holding onnxruntime.dll + DirectML.dll
+                                          (libonnxruntime.so* on POSIX, CPU EP only) */
+    const eng_path_t *models_dir;       /* bundled models (esrgan + skeletons) */
+    const eng_path_t *user_models_dir;  /* downloaded .pth + skeletons, may be NULL */
     eng_device device;
     int threads;                     /* 0 = auto (physical cores) */
 } eng_config;
@@ -107,7 +119,7 @@ typedef struct {
     const char *url;
     const char *sha256_hex;
     unsigned long long weights_size;
-    wchar_t weights_path[520];   /* where the .pth must live */
+    eng_path_t weights_path[520];/* where the .pth must live */
     char missing[256];           /* human-readable "what is missing" (UTF-8) */
 } eng_model_state;
 

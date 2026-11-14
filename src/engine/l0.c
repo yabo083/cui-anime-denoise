@@ -16,22 +16,15 @@
  * np.roll == periodic/circular boundary. Channels are independent except for
  * the shared keep-mask. 2D FFTs run as row transforms + a transpose, so all
  * pocketfft calls are on contiguous rows. Workers are created per call at
- * THREAD_PRIORITY_BELOW_NORMAL.
+ * below-normal priority (plat_thread_below_normal()).
  */
 #include "engine.h"
+#include "../plat.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
 
 #include "../../third_party/pocketfft/pocketfft_double.h"
 
@@ -213,19 +206,19 @@ static void run_stage(const l0_job *j, l0_worker *w) {
     }
 }
 
-static DWORD WINAPI worker_main(void *pv) {
+static void worker_main(void *pv) {
     char *block = (char *)pv;
     l0_job *j = (l0_job *)block;
     l0_worker *w = (l0_worker *)(block + sizeof(l0_job));
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     run_stage(j, w);
-    return 0;
 }
 
 /* Split `n` rows across `plans` workers; thread 0's share runs on the caller,
- * the rest on CreateThread'd workers. Returns 0 ok, -1 spawn failure. */
+ * the rest on spawned workers (below-normal priority, see plat.h). Joining
+ * one by one is the same as the wait-all this replaced: every handle is
+ * waited for exactly once before return. Returns 0 ok, -1 spawn failure. */
 static int run_parallel(const l0_job *job, int n, int nthreads,
-                        volatile long *cancel, HANDLE *handles,
+                        volatile long *cancel, plat_thread *handles,
                         char **blocks, l0_worker *plans) {
     int t, spawned = 0;
     int nw = nthreads < n ? nthreads : n;
@@ -249,22 +242,16 @@ static int run_parallel(const l0_job *job, int n, int nthreads,
             run_stage(j, w);
             continue;
         }
-        handles[spawned] = CreateThread(NULL, 0, worker_main, blocks[t],
-                                        0, NULL);
-        if (!handles[spawned]) {
-            WaitForMultipleObjects((DWORD)spawned, handles, TRUE, INFINITE);
+        if (plat_thread_spawn(&handles[spawned], worker_main, blocks[t])) {
             for (t = 0; t < spawned; t++) {
-                CloseHandle(handles[t]);
+                plat_thread_join(&handles[t]);
             }
             return -1;
         }
         spawned++;
     }
-    if (spawned) {
-        WaitForMultipleObjects((DWORD)spawned, handles, TRUE, INFINITE);
-        for (t = 0; t < spawned; t++) {
-            CloseHandle(handles[t]);
-        }
+    for (t = 0; t < spawned; t++) {
+        plat_thread_join(&handles[t]);
     }
     return 0;
 }
@@ -277,7 +264,7 @@ int eng_l0(const eng_image *in, double lam, eng_image *out, int threads,
     cfft_plan pw = NULL, ph = NULL;
     int ret = -1;
     char **blocks = NULL;
-    HANDLE *handles = NULL;
+    plat_thread *handles = NULL;
     l0_worker *plans = NULL;
 
     memset(&b, 0, sizeof(b));
@@ -296,10 +283,7 @@ int eng_l0(const eng_image *in, double lam, eng_image *out, int threads,
         return 0;
     }
     if (threads <= 0) {
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        threads = (int)si.dwNumberOfProcessors;
-        if (threads < 1) threads = 1;
+        threads = plat_num_cpus();
     }
 
     /* planes */
@@ -327,7 +311,7 @@ int eng_l0(const eng_image *in, double lam, eng_image *out, int threads,
      * but a plan per thread keeps the contract trivially safe) */
     plans = (l0_worker *)calloc((size_t)nt, sizeof(l0_worker));
     blocks = (char **)calloc((size_t)nt, sizeof(char *));
-    handles = (HANDLE *)calloc((size_t)nt, sizeof(HANDLE));
+    handles = (plat_thread *)calloc((size_t)nt, sizeof(plat_thread));
     if (!plans || !blocks || !handles) goto end;
     for (i = 0; i < nt; i++) {
         blocks[i] = (char *)calloc(1, sizeof(l0_job) + sizeof(l0_worker));
