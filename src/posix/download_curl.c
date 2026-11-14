@@ -119,6 +119,9 @@ bool upd__download_to_file(const char *url, const eng_path_t *dest,
          * honoured by curl itself. */
         execlp("curl", "curl",
                "-fL", "--retry", "2", "--connect-timeout", "30",
+               /* mid-transfer stall: die if under 1 KiB/s for 30 s --
+                * mirrors the WinHTTP receive timeout in update_io.c */
+               "--speed-limit", "1024", "--speed-time", "30",
                "-sS", "-o", dest, url, (char *)NULL);
         _exit(127);
     }

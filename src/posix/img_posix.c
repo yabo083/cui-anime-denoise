@@ -139,6 +139,7 @@ static unsigned char *jpeg_icc(const unsigned char *d, size_t n,
 {
     unsigned char *icc = NULL;
     unsigned char seq_total = 0, seq_seen = 0;
+    unsigned char seq_seen_map[256] = {0};
     size_t icc_len = 0, pos;
     *out_size = 0;
     if (!is_jpeg_sig(d, n)) return NULL;
@@ -148,6 +149,10 @@ static unsigned char *jpeg_icc(const unsigned char *d, size_t n,
         const unsigned char *seg;
         if (d[pos] != 0xFF) break;
         marker = d[pos + 1];
+        if (marker == 0xFF) {   /* fill byte: JPEG allows padding before a marker */
+            pos++;
+            continue;
+        }
         if (marker == 0xD8 || marker == 0x01 ||
             (marker >= 0xD0 && marker <= 0xD7)) {
             pos += 2;
@@ -160,9 +165,11 @@ static unsigned char *jpeg_icc(const unsigned char *d, size_t n,
             memcmp(seg, "ICC_PROFILE\0", 12) == 0) {
             unsigned seq_no = seg[12], seq_cnt = seg[13];
             size_t plen = seglen - 2 - 14;
-            if (seq_cnt && seq_no >= 1 && seq_no <= seq_cnt) {
+            if (seq_cnt && seq_no >= 1 && seq_no <= seq_cnt &&
+                !seq_seen_map[seq_no]) {
                 unsigned char *nb;
                 if (!seq_total) seq_total = seq_cnt;
+                seq_seen_map[seq_no] = 1;
                 nb = (unsigned char *)realloc(icc, icc_len + plen);
                 if (nb) {
                     icc = nb;
@@ -199,6 +206,10 @@ static int jpeg_exif_orientation(const unsigned char *d, size_t n)
         const unsigned char *seg;
         if (d[pos] != 0xFF) break;
         marker = d[pos + 1];
+        if (marker == 0xFF) {   /* fill byte */
+            pos++;
+            continue;
+        }
         if (marker == 0xDA) break;
         if (marker == 0xD8 || marker == 0x01 ||
             (marker >= 0xD0 && marker <= 0xD7)) {
@@ -337,6 +348,20 @@ static bool decode_mem(const void *data, size_t size, img_pixels *out,
     } else {
         out->rgba = stbi_load_from_memory(d, (int)size, &w, &h, &comp, 4);
         if (!out->rgba) return false;
+        if (jpg && comp == 4) {
+            /* 4-component JPEG = CMYK: stb returns raw CMYK channels. Use the
+             * same naive conversion img.c falls back to without a colour
+             * profile: R = 255 - min(255, C + K), alpha opaque. */
+            size_t i, np = (size_t)w * (size_t)h;
+            for (i = 0; i < np; i++) {
+                unsigned char *px = out->rgba + i * 4;
+                unsigned c = px[0], m = px[1], y = px[2], k = px[3];
+                px[0] = (unsigned char)(255 - (c + k > 255 ? 255 : c + k));
+                px[1] = (unsigned char)(255 - (m + k > 255 ? 255 : m + k));
+                px[2] = (unsigned char)(255 - (y + k > 255 ? 255 : y + k));
+                px[3] = 255;
+            }
+        }
     }
     if (w <= 0 || h <= 0 ||
         (uint64_t)w * (uint64_t)h * 4u > IMG_MAX_BYTES) {
@@ -410,7 +435,7 @@ bool img_decode_file_ex(const char *utf8_path, img_pixels *out,
         if (got < 65536) break;
     }
     fclose(f);
-    if (!len) {
+    if (!len || len > 0x7fffffffU) {   /* stb takes an int length */
         free(buf);
         return false;
     }

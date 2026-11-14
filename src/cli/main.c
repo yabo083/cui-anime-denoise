@@ -399,13 +399,22 @@ static int parse_args(int argc, char **argv, cli_opts *o)
     o->l0 = 0.001;
     o->down_pct = 60.0;
     o->device = ENG_DEV_AUTO;
-    o->inputs = (char **)calloc((size_t)argc, sizeof(char *));
+    o->inputs = (char **)calloc((size_t)argc + 1, sizeof(char *));
+    if (!o->inputs) {
+        err_line("anime-denoise: out of memory");
+        return 3;
+    }
 
     for (int i = 0; i < argc; i++) {
         const char *a = argv[i];
         const char *eq = strchr(a, '=');
         size_t namelen = eq ? (size_t)(eq - a) : strlen(a);
 
+        if (strcmp(a, "--") == 0) {
+            /* end of options: everything after is an input path */
+            while (++i < argc) o->inputs[o->n_inputs++] = argv[i];
+            break;
+        }
         if (strcmp(a, "-") == 0) {
             o->use_stdin = 1;
         } else if (strncmp(a, "--out", namelen) == 0 && (namelen == 5)) {
@@ -556,7 +565,8 @@ static eng_path_t *default_models_dir(void)
 #endif
 }
 
-/* The JSON "device" string: "dml:<adapter>" or "cpu". */
+/* The JSON "device" string: "dml:<adapter>" on Windows, "cuda:<adapter>"
+ * on POSIX with a CUDA GPU, or "cpu". */
 static void device_json(const eng *e, int gpu, char *out, size_t cap)
 {
     const char *name;
@@ -581,8 +591,13 @@ static void device_json(const eng *e, int gpu, char *out, size_t cap)
         char *cut;
         snprintf(tmp, sizeof tmp, "%s", name);
         cut = strstr(tmp, " (DirectML)");
+        if (!cut) cut = strstr(tmp, " (CUDA)");
         if (cut) *cut = 0;
+#ifdef _WIN32
         snprintf(out, cap, "dml:%.59s", tmp);
+#else
+        snprintf(out, cap, "cuda:%.58s", tmp);
+#endif
     }
 }
 
@@ -800,8 +815,8 @@ static int process_one(job *j, const char *input_label, const img_pixels *px,
 done:
     for (size_t i = 0; i < N_METHODS; i++) {
         if (!shared[i]) eng_image_free(&results[i]);
-        if (i >= 1 && i <= 7) img_free(&sheet_cells[i]);
     }
+    for (size_t i = 1; i <= 7; i++) img_free(&sheet_cells[i]);
     for (int i = 0; i < 3; i++) eng_image_free(&cache[i]);
     free(src.rgb);
     return r != 0 ? r : (any ? 0 : -1);
@@ -879,6 +894,13 @@ static int cli_run(int argc, char **argv)
             free((void *)cfg.models_dir);
             free((void *)cfg.user_models_dir);
             return 3;
+        }
+        /* eng_model_download only mkdir()s the leaf; a fresh profile has
+         * none of the parents, so lay them down first. */
+        {
+            char u8dir[2400];
+            if (plat_path_to_u8(cfg.user_models_dir, u8dir, sizeof u8dir))
+                mkdirs(u8dir);
         }
         fprintf(stderr, "downloading %s weights...\n", o.download);
         rc = eng_model_download(&cfg, m, dl_progress, &j.prog, &g_cancel,
@@ -1011,7 +1033,7 @@ static int cli_run(int argc, char **argv)
                 img_free(&px);
                 img_free_icc(icc);
                 if (j.e) eng_destroy(j.e);
-                return rc == 1 ? 1 : 1;
+                return 1;
             }
             if (!rgb_to_px(&res, &px, &outp)) {
                 err_line("stdin: output packing failed");
@@ -1071,6 +1093,11 @@ static int cli_run(int argc, char **argv)
             }
         } else {
             files = (char **)calloc(1, sizeof(char *));
+            if (!files) {
+                err_line("anime-denoise: out of memory");
+                rc = 1;
+                continue;
+            }
             files[0] = (char *)input;
             nfiles = 1;
         }

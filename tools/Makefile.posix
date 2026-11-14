@@ -27,8 +27,8 @@ CPPFLAGS += -I$(ROOT)/src \
             -D_DEFAULT_SOURCE -D_FILE_OFFSET_BITS=64 \
             -DAPP_VERSION='"$(VERSION)"'
 
-CFLAGS   ?= -O2 -std=c11 -Wall -Wextra
-LDLIBS   += -ldl -lpthread -lm
+CFLAGS   ?= -O2 -std=c11 -Wall -Wextra -pthread
+LDLIBS   += -ldl -pthread -lm
 
 SRCS := src/engine/engine.c \
         src/engine/l0.c \

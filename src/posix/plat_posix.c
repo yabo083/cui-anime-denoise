@@ -412,7 +412,7 @@ int plat_thread_spawn(plat_thread *out, plat_thread_fn fn, void *arg)
 
 void plat_thread_join(plat_thread *t)
 {
-    if (!t) return;
+    if (!t || !*t) return;
     pthread_join(*t, NULL);
 }
 
