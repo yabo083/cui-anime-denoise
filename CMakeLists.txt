@@ -36,6 +36,7 @@ add_library(anime_core STATIC
     src/config.c
     src/log.c
     src/img.c
+    src/img_common.c
     src/img_clip.c
     src/loader.c
     src/mask.c
@@ -110,6 +111,7 @@ add_executable(anime-denoise
     src/cli/main.c
     src/cli/sheet.c
     src/img.c
+    src/img_common.c
     src/img_clip.c
     src/update_io.c)
 

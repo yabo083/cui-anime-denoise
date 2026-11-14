@@ -34,7 +34,9 @@ round trip as well:
 ```
 pwsh -NoProfile -Command ". .\toolchain.ps1 -Quiet;
   cl /nologo /utf-8 /W4 /O2 /I src /c src\img.c /Fo:tmp\maskbuild\img.obj;
+  cl /nologo /utf-8 /W4 /O2 /I src /c src\img_common.c /Fo:tmp\maskbuild\img_common.obj;
   link /nologo tmp\maskbuild\test_mask.obj tmp\maskbuild\mask.obj tmp\maskbuild\img.obj
+    tmp\maskbuild\img_common.obj
     ole32.lib oleaut32.lib uuid.lib windowscodecs.lib bcrypt.lib shell32.lib
     shlwapi.lib advapi32.lib user32.lib gdi32.lib /OUT:tmp\maskbuild\test_mask_png.exe"
 tmp\maskbuild\test_mask_png.exe
