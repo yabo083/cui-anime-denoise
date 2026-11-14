@@ -6,11 +6,16 @@
  *     canvas = (4*(w+g)-g, 2*(h+top+g)), background #3C3C3C
  *     cell i at (i%4*(w+g), i//4*(h+top+g)), image at +top, label above it
  *
- * Labels are drawn with GDI on a 32bpp DIB. The bundled Noto Sans SC font is
- * loaded privately (AddFontResourceExW) so it neither needs installing nor
- * leaks into the system's font table; Arial is the fallback.
+ * Labels are drawn with GDI on a 32bpp DIB on Windows (the bundled Noto
+ * Sans SC font is loaded privately via AddFontResourceExW; Arial is the
+ * fallback), and with stb_truetype straight onto the RGBA canvas on POSIX
+ * (the same bundled .ttf, no fontconfig dependency). Missing font on POSIX
+ * leaves the label strip blank rather than failing the sheet.
  */
 #include "../img.h"
+#include "../engine/engine.h"   /* eng_path_t */
+
+#ifdef _WIN32
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -172,9 +177,146 @@ done:
     if (loaded) remove_private_font(exe_dir);
 }
 
+#else /* POSIX -------------------------------------------------------------- */
+
+#include "../plat.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+#pragma GCC diagnostic ignored "-Wtype-limits"
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "../../third_party/CUI/third_party/stb_truetype.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+/* Minimal UTF-8 decode (labels are ASCII today; this keeps them safe). */
+static unsigned next_cp(const char **sp)
+{
+    const unsigned char *s = (const unsigned char *)*sp;
+    unsigned c;
+    if (s[0] < 0x80) {
+        *sp += 1;
+        return s[0];
+    }
+    if ((s[0] & 0xE0) == 0xC0 && (s[1] & 0xC0) == 0x80) {
+        c = ((unsigned)(s[0] & 0x1F) << 6) | (unsigned)(s[1] & 0x3F);
+        *sp += 2;
+        return c;
+    }
+    if ((s[0] & 0xF0) == 0xE0 && (s[1] & 0xC0) == 0x80 &&
+        (s[2] & 0xC0) == 0x80) {
+        c = ((unsigned)(s[0] & 0x0F) << 12) |
+            ((unsigned)(s[1] & 0x3F) << 6) | (unsigned)(s[2] & 0x3F);
+        *sp += 3;
+        return c;
+    }
+    if ((s[0] & 0xF8) == 0xF0 && (s[1] & 0xC0) == 0x80 &&
+        (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80) {
+        c = ((unsigned)(s[0] & 0x07) << 18) |
+            ((unsigned)(s[1] & 0x3F) << 12) |
+            ((unsigned)(s[2] & 0x3F) << 6) | (unsigned)(s[3] & 0x3F);
+        *sp += 4;
+        return c;
+    }
+    *sp += 1;
+    return 0xFFFD;
+}
+
+/* White text at the same cells/offsets the GDI version uses: x+12,
+ * y+top/5, font height top/2. */
+static void draw_labels(const eng_path_t *exe_dir, img_pixels *canvas,
+                        int cw, int ch, int w, int h, int g, int top,
+                        const char *const labels[8])
+{
+    eng_path_t *fp;
+    unsigned char *ttf;
+    size_t ttf_len = 0;
+    stbtt_fontinfo font;
+    float scale;
+    int ascent = 0, i;
+
+    if (!exe_dir) return;
+    fp = plat_join_path(exe_dir, "assets/fonts/NotoSansSC-Medium.ttf");
+    if (!fp) return;
+    ttf = plat_read_all(fp, &ttf_len);
+    free(fp);
+    if (!ttf) return;
+    if (!stbtt_InitFont(&font, ttf, stbtt_GetFontOffsetForIndex(ttf, 0))) {
+        free(ttf);
+        return;
+    }
+    scale = stbtt_ScaleForPixelHeight(&font, (float)(top / 2));
+    stbtt_GetFontVMetrics(&font, &ascent, NULL, NULL);
+
+    for (i = 0; i < 8; i++) {
+        int cx = (i % 4) * (w + g) + 12;
+        int cy = (i / 4) * (h + top + g);
+        int baseline = cy + top / 5 + (int)(ascent * scale + 0.5f);
+        float pen = (float)cx;
+        const char *s;
+        if (!labels[i]) continue;
+        s = labels[i];
+        while (*s) {
+            unsigned cp = next_cp(&s);
+            int gw, gh, xoff, yoff, adv, lsb;
+            unsigned char *bmp;
+            stbtt_GetCodepointHMetrics(&font, (int)cp, &adv, &lsb);
+            bmp = stbtt_GetCodepointBitmap(
+                &font, scale, scale, (int)cp, &gw, &gh, &xoff, &yoff);
+            if (bmp) {
+                int gx = (int)(pen + 0.5f) + xoff;
+                int gy = baseline + yoff;
+                for (int yy = 0; yy < gh; yy++) {
+                    int dy = gy + yy;
+                    const unsigned char *br;
+                    uint8_t *drow;
+                    if (dy < 0 || dy >= ch) continue;
+                    br = bmp + (size_t)yy * gw;
+                    drow = canvas->rgba + (size_t)dy * cw * 4;
+                    for (int xx = 0; xx < gw; xx++) {
+                        int dx = gx + xx, a;
+                        uint8_t *d;
+                        if (dx < 0 || dx >= cw) continue;
+                        a = br[xx];
+                        if (!a) continue;
+                        d = drow + (size_t)dx * 4;
+                        /* white text "over" the canvas: dst*(1-a) + 255*a */
+                        d[0] = (uint8_t)((d[0] * (255 - a) + 255 * a + 127) / 255);
+                        d[1] = (uint8_t)((d[1] * (255 - a) + 255 * a + 127) / 255);
+                        d[2] = (uint8_t)((d[2] * (255 - a) + 255 * a + 127) / 255);
+                        d[3] = 255;
+                    }
+                }
+                free(bmp);
+            }
+            pen += (float)adv * scale;
+            if (*s) {
+                /* kerning needs the next codepoint; peek without
+                 * consuming it */
+                const char *peek = s;
+                unsigned nc = next_cp(&peek);
+                pen += stbtt_GetCodepointKernAdvance(&font, (int)cp,
+                                                     (int)nc) * scale;
+            }
+        }
+    }
+    free(ttf);
+}
+
+#endif /* _WIN32 / POSIX label backend */
+
 /* cells[0] is the original; cells[1..7] the method results, all the same
  * size. The sheet is returned in `out` (RGBA8, alpha 255). */
-bool cli_sheet_make(const wchar_t *exe_dir, const img_pixels *cells[8],
+bool cli_sheet_make(const eng_path_t *exe_dir, const img_pixels *cells[8],
                     const char *const labels[8], img_pixels *out)
 {
     int w, h, g = 20, top, cw, ch;

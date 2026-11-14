@@ -1,21 +1,24 @@
 /* anime-denoise -- console front end over the native engine (see
  * docs/cli-spec.md). One process, no GUI state, no single-instance mutex:
- * decode via WIC (img.c), denoise via anime_engine, save PNGs with alpha and
- * ICC put back, like denoise.py's save_png.
+ * decode via WIC on Windows (img.c) or stb on POSIX (posix/img_posix.c),
+ * denoise via anime_engine, save PNGs with alpha and ICC put back, like
+ * denoise.py's save_png.
  *
  * Exit codes: 0 all done, 1 some/every image failed, 2 bad arguments,
- * 3 inference engine unavailable (missing runtime DLLs or model files).
+ * 3 inference engine unavailable (missing runtime libs or model files).
  *
- * The updater's WinHTTP helper (update_io.c) is linked for `eng_model_download`;
- * it expects three process-level hooks the GUI normally provides. The console
- * versions live at the bottom of this file: no settings dir, logging goes to
- * stderr, and "stop requested" is our Ctrl-C flag.
+ * The weights download expects process-level hooks the GUI normally
+ * provides (update_io.c on Windows, posix/download_curl.c on POSIX).
+ * The console versions live at the bottom of this file: no settings dir,
+ * logging goes to stderr, and "stop requested" is our Ctrl-C/SIGINT flag.
  */
 #include "../img.h"
 #include "../img_priv.h"   /* img__pixels_alloc (same-module internals) */
 #include "../engine/engine.h"
+#include "../plat.h"
 #include "../config.h"     /* log_level, for the log_write stub signature */
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -25,6 +28,9 @@
 #include <windows.h>
 #include <fcntl.h>
 #include <io.h>
+#else
+#include <signal.h>
+#endif
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -35,32 +41,31 @@
 /* Small helpers                                                             */
 /* ------------------------------------------------------------------------- */
 
-static wchar_t *u2w(const char *s)
-{
-    int n;
-    wchar_t *w;
-    if (!s) return NULL;
-    n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, NULL, 0);
-    if (n <= 0) return NULL;
-    w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
-    if (!w) return NULL;
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, w, n) != n) {
-        free(w);
-        return NULL;
-    }
-    return w;
-}
-
+#ifdef _WIN32
 static char *w2u(const wchar_t *w)
 {
-    int n;
     char *s;
     if (!w) return NULL;
-    n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
-    if (n <= 0) return NULL;
-    s = (char *)malloc((size_t)n);
+    /* worst case: each UTF-16 unit becomes 4 UTF-8 bytes */
+    s = (char *)malloc(wcslen(w) * 4 + 1);
     if (!s) return NULL;
-    if (WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL) != n) {
+    if (!plat_path_to_u8(w, s, wcslen(w) * 4 + 1)) {
+        free(s);
+        return NULL;
+    }
+    return s;
+}
+#endif
+
+/* eng_path_t -> freshly malloc'ed UTF-8 (scan_dir feeds file names to the
+ * UTF-8-only helpers). Worst case 4 bytes per path unit covers surrogate
+ * pairs; POSIX is 1:1 so the same bound is simply generous. */
+static char *path_u8_alloc(const eng_path_t *p)
+{
+    size_t cap = plat_plen(p) * 4 + 1;
+    char *s = (char *)malloc(cap);
+    if (!s) return NULL;
+    if (!plat_path_to_u8(p, s, cap)) {
         free(s);
         return NULL;
     }
@@ -79,16 +84,16 @@ static void err_line(const char *fmt, ...)
 /* mkdir -p on a UTF-8 path. */
 static bool mkdirs(const char *utf8)
 {
-    wchar_t *w = u2w(utf8);
+    eng_path_t *w = plat_u8_to_path(utf8);
     size_t n;
     if (!w) return false;
-    n = wcslen(w);
+    n = plat_plen(w);
     for (size_t i = 1; i <= n; i++) {        /* skip a leading separator */
-        if (w[i] == L'\\' || w[i] == L'/' || i == n) {
-            wchar_t keep = w[i];
+        if (w[i] == '\\' || w[i] == '/' || i == n) {
+            eng_path_t keep = w[i];
             w[i] = 0;
-            if (w[0] && !(i == 2 && w[1] == L':')) {
-                if (!CreateDirectoryW(w, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+            if (w[0] && !(i == 2 && w[1] == ':')) {   /* drive letter / UNC edge */
+                if (!plat_mkdir(w)) {
                     w[i] = keep;
                     free(w);
                     return false;
@@ -124,10 +129,10 @@ static void split_path(const char *path, char *dir, size_t dcap,
 
 static bool is_dir(const char *utf8)
 {
-    wchar_t *w = u2w(utf8);
-    DWORD a = w ? GetFileAttributesW(w) : INVALID_FILE_ATTRIBUTES;
+    eng_path_t *w = plat_u8_to_path(utf8);
+    bool r = w && plat_is_dir(w);
     free(w);
-    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+    return r;
 }
 
 /* denoise.py's IMAGE_EXTS, case-insensitive on the suffix. */
@@ -141,7 +146,7 @@ static bool is_image_name(const char *name)
     const char *dot = strrchr(name, '.');
     if (!dot) return false;
     for (size_t i = 0; i < sizeof IMAGE_EXTS / sizeof IMAGE_EXTS[0]; i++)
-        if (_stricmp(dot, IMAGE_EXTS[i]) == 0) return true;
+        if (plat_stricmp(dot, IMAGE_EXTS[i]) == 0) return true;
     return false;
 }
 
@@ -149,34 +154,31 @@ static bool is_image_name(const char *name)
  * files inside `dir`, as full UTF-8 paths. */
 static char **scan_dir(const char *dir, int *count)
 {
-    wchar_t *wd = u2w(dir);
-    wchar_t *pat = NULL;
-    WIN32_FIND_DATAW fd = { 0 };
-    HANDLE h = INVALID_HANDLE_VALUE;
+    eng_path_t *pd;
+    plat_dir *d = NULL;
+    eng_path_t *name;
     char **list = NULL;
     int n = 0, cap = 0;
 
     *count = 0;
-    if (!wd) return NULL;
-    pat = (wchar_t *)malloc((wcslen(wd) + 3) * sizeof(wchar_t));
-    if (pat) swprintf(pat, wcslen(wd) + 3, L"%s\\*", wd);
-    if (pat) h = FindFirstFileW(pat, &fd);
-    free(wd);
-    free(pat);
-    if (h == INVALID_HANDLE_VALUE) return NULL;
+    pd = plat_u8_to_path(dir);
+    if (!pd) return NULL;
+    d = plat_dir_open(pd);
+    free(pd);
+    if (!d) return NULL;
 
-    do {
-        char *name, *full;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        name = w2u(fd.cFileName);
-        if (!name) continue;
-        if (!is_image_name(name)) {
-            free(name);
+    while ((name = plat_dir_next_file(d)) != NULL) {
+        char *uname, *full;
+        uname = path_u8_alloc(name);
+        free(name);
+        if (!uname) continue;
+        if (!is_image_name(uname)) {
+            free(uname);
             continue;
         }
-        full = (char *)malloc(strlen(dir) + strlen(name) + 2);
-        if (full) sprintf(full, "%s\\%s", dir, name);
-        free(name);
+        full = (char *)malloc(strlen(dir) + strlen(uname) + 2);
+        if (full) sprintf(full, "%s/%s", dir, uname);
+        free(uname);
         if (!full) continue;
         if (n == cap) {
             cap = cap ? cap * 2 : 16;
@@ -188,8 +190,8 @@ static char **scan_dir(const char *dir, int *count)
             list = nl;
         }
         list[n++] = full;
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
+    }
+    plat_dir_close(d);
 
     /* insertion sort; folder counts are small */
     for (int i = 1; i < n; i++) {
@@ -255,6 +257,7 @@ static int method_index(const char *name)
 
 static volatile long g_cancel;
 
+#ifdef _WIN32
 static BOOL WINAPI on_ctrl(DWORD type)
 {
     if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT || type == CTRL_CLOSE_EVENT) {
@@ -263,6 +266,30 @@ static BOOL WINAPI on_ctrl(DWORD type)
     }
     return FALSE;
 }
+
+static void install_cancel_handler(void)
+{
+    SetConsoleCtrlHandler(on_ctrl, TRUE);
+}
+#else
+static void on_sigint(int sig)
+{
+    (void)sig;
+    plat_atomic_set(&g_cancel, 1);   /* async-signal-safe exchange */
+}
+
+static void install_cancel_handler(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_sigint;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    /* --stdout writes PNG bytes into a pipe: a closed consumer must not
+     * kill the process mid-write, the write error is handled instead */
+    signal(SIGPIPE, SIG_IGN);
+}
+#endif
 
 typedef struct {
     unsigned long long last_ms;
@@ -276,7 +303,7 @@ static void on_progress(void *ud, const char *stage, float v01)
     unsigned long long now;
     int pct;
     if (p->quiet) return;
-    now = GetTickCount64();
+    now = plat_tick_ms();
     if (v01 < 1.0f && now - p->last_ms < 100) return;
     p->last_ms = now;
     pct = (int)(v01 * 100.0f + 0.5f);
@@ -343,7 +370,12 @@ static const char USAGE[] =
     "  --l0 X              L0 strength (default 0.001; 0 skips L0)\n"
     "  --down PCT          pre-downscale percent (default 60; apisr ignores it)\n"
     "  --device auto|gpu|cpu   inference device (default auto)\n"
+#ifdef _WIN32
     "  --models DIR        model dir (default %%LOCALAPPDATA%%\\AnimeDenoise\\models)\n"
+#else
+    "  --models DIR        model dir (default $XDG_DATA_HOME/anime-denoise/models\n"
+    "                      or ~/.local/share/anime-denoise/models)\n"
+#endif
     "  --download NAME     fetch cugan|apisr weights to --models and exit\n"
     "  --json              one JSON object per completed item on stdout\n"
     "  --quiet, -q         no progress output\n"
@@ -405,9 +437,9 @@ static int parse_args(int argc, char **argv, cli_opts *o)
         } else if (namelen == 8 && strncmp(a, "--device", namelen) == 0) {
             const char *v = take_value(&i, argc, argv, a, eq);
             if (!v) return 2;
-            if (_stricmp(v, "auto") == 0) o->device = ENG_DEV_AUTO;
-            else if (_stricmp(v, "gpu") == 0) o->device = ENG_DEV_GPU;
-            else if (_stricmp(v, "cpu") == 0) o->device = ENG_DEV_CPU;
+            if (plat_stricmp(v, "auto") == 0) o->device = ENG_DEV_AUTO;
+            else if (plat_stricmp(v, "gpu") == 0) o->device = ENG_DEV_GPU;
+            else if (plat_stricmp(v, "cpu") == 0) o->device = ENG_DEV_CPU;
             else {
                 err_line("anime-denoise: --device must be auto|gpu|cpu, got '%s'", v);
                 return 2;
@@ -475,41 +507,53 @@ static int parse_args(int argc, char **argv, cli_opts *o)
 /* Engine wiring                                                             */
 /* ------------------------------------------------------------------------- */
 
-static wchar_t *exe_dir(void)
+static eng_path_t *join_w(const eng_path_t *a, const eng_path_t *b)
 {
-    wchar_t buf[MAX_PATH * 2];
-    DWORD n = GetModuleFileNameW(NULL, buf, (DWORD)(sizeof buf / sizeof buf[0]));
-    wchar_t *end;
-    if (!n || n >= sizeof buf / sizeof buf[0]) return NULL;
-    end = buf + n;
-    while (end > buf && end[-1] != L'\\' && end[-1] != L'/') end--;
-    *end = L'\0';
-    return _wcsdup(buf);
+    return plat_join_path(a, b);
 }
 
-static wchar_t *join_w(const wchar_t *a, const wchar_t *b)
+/* Windows: "%LOCALAPPDATA%\AnimeDenoise\models".
+ * POSIX:   "$XDG_DATA_HOME/anime-denoise/models" (or
+ *          ~/.local/share/anime-denoise/models), with $DN_USER_MODELS_DIR
+ *          honored first -- the same test hook the GUI's denoiser.c uses. */
+static eng_path_t *default_models_dir(void)
 {
-    size_t la = wcslen(a), lb = wcslen(b);
-    int sep = la && a[la - 1] != L'\\' && a[la - 1] != L'/';
-    wchar_t *r = (wchar_t *)malloc((la + lb + 2) * sizeof(wchar_t));
-    if (!r) return NULL;
-    memcpy(r, a, la * sizeof(wchar_t));
-    if (sep) r[la++] = L'\\';
-    memcpy(r + la, b, (lb + 1) * sizeof(wchar_t));
-    return r;
-}
-
-/* "%LOCALAPPDATA%\AnimeDenoise\models" */
-static wchar_t *default_models_dir(void)
-{
+#ifdef _WIN32
     const wchar_t *base = _wgetenv(L"LOCALAPPDATA");
-    wchar_t *dir, *out;
+    eng_path_t *dir, *out;
     if (!base || !*base) base = L".";
     dir = join_w(base, L"AnimeDenoise");
     if (!dir) return NULL;
     out = join_w(dir, L"models");
     free(dir);
     return out;
+#else
+    const char *xdg, *home;
+    eng_path_t *base = NULL, *dir, *out;
+    const char *env = getenv("DN_USER_MODELS_DIR");
+    if (env && *env) return plat_u8_to_path(env);
+    xdg = getenv("XDG_DATA_HOME");
+    if (xdg && *xdg) {
+        base = plat_u8_to_path(xdg);
+    } else {
+        home = getenv("HOME");
+        if (home && *home) {
+            eng_path_t *h = plat_u8_to_path(home);
+            if (h) {
+                base = join_w(h, ".local/share");
+                free(h);
+            }
+        }
+    }
+    if (!base) base = plat_u8_to_path(".");
+    if (!base) return NULL;
+    dir = join_w(base, "anime-denoise");
+    free(base);
+    if (!dir) return NULL;
+    out = join_w(dir, "models");
+    free(dir);
+    return out;
+#endif
 }
 
 /* The JSON "device" string: "dml:<adapter>" or "cpu". */
@@ -527,7 +571,7 @@ static void device_json(const eng *e, int gpu, char *out, size_t cap)
     if (!name) name = "gpu";
     for (size_t i = 0; i < sizeof prefixes / sizeof prefixes[0]; i++) {
         size_t n = strlen(prefixes[i]);
-        if (_strnicmp(name, prefixes[i], n) == 0) {
+        if (plat_strnicmp(name, prefixes[i], n) == 0) {
             name += n;
             break;
         }
@@ -538,7 +582,7 @@ static void device_json(const eng *e, int gpu, char *out, size_t cap)
         snprintf(tmp, sizeof tmp, "%s", name);
         cut = strstr(tmp, " (DirectML)");
         if (cut) *cut = 0;
-        snprintf(out, cap, "dml:%s", tmp);
+        snprintf(out, cap, "dml:%.59s", tmp);
     }
 }
 
@@ -580,7 +624,7 @@ static bool rgb_to_px(const eng_image *im, const img_pixels *src, img_pixels *ou
 /* The comparison sheet (implemented in sheet.c)                             */
 /* ------------------------------------------------------------------------- */
 
-bool cli_sheet_make(const wchar_t *exe_dir, const img_pixels *cells[8],
+bool cli_sheet_make(const eng_path_t *exe_dir, const img_pixels *cells[8],
                     const char *const labels[8], img_pixels *out);
 
 /* Labels: denoise.py's LABELS with {lam} filled in. */
@@ -608,7 +652,7 @@ typedef struct {
     const cli_opts *o;
     prog_ctx prog;
     char dev[64];
-    const wchar_t *exe_dir;
+    const eng_path_t *exe_dir;
 } job;
 
 /* Runs one method on `src` (results in `res`/`res_shared`). `cache` holds the
@@ -692,7 +736,7 @@ static int process_one(job *j, const char *input_label, const img_pixels *px,
 
     for (int i = 0; i < n_sel && !g_cancel; i++) {
         const method_def *m = sel[i];
-        unsigned long long t0 = GetTickCount64();
+        unsigned long long t0 = plat_tick_ms();
         int idx = method_index(m->name);
         r = run_method(j, &src, cache, m, &results[idx], &shared[idx], err, sizeof err);
         if (r != 0) {
@@ -702,13 +746,14 @@ static int process_one(job *j, const char *input_label, const img_pixels *px,
         }
         {
             img_pixels outp = { NULL, 0, 0 };
-            char outpath[1200];
+            char outpath[2500];   /* outdir(<1800) + stem(<600) + _method.png */
             if (!rgb_to_px(&results[idx], px, &outp)) {
                 err_line("%s: %s: output packing failed", input_label, m->name);
                 r = -1;
                 goto done;
             }
-            snprintf(outpath, sizeof outpath, "%s%s_%s.png", out_dir, stem, m->name);
+            snprintf(outpath, sizeof outpath, "%s%s_%s.png", out_dir, stem,
+                     m->name);
             if (!img_encode_png_icc(outpath, &outp, icc, icc_size)) {
                 err_line("%s: cannot write %s", input_label, outpath);
                 img_free(&outp);
@@ -716,7 +761,7 @@ static int process_one(job *j, const char *input_label, const img_pixels *px,
                 goto done;
             }
             report_item(j->o, input_label, outpath, m->name,
-                        outp.w, outp.h, GetTickCount64() - t0, j->dev);
+                        outp.w, outp.h, plat_tick_ms() - t0, j->dev);
             sheet_cells[idx + 1] = outp;      /* owned by us, freed below */
         }
     }
@@ -726,8 +771,8 @@ static int process_one(job *j, const char *input_label, const img_pixels *px,
         const img_pixels *cells[8];
         const char *labels[8];
         char lc[64], le[64];
-        unsigned long long t0 = GetTickCount64();
-        char outpath[1200];
+        unsigned long long t0 = plat_tick_ms();
+        char outpath[2500];
 
         sheet_labels(j->o->l0, labels, lc, le);
         cells[0] = px;   /* "original" */
@@ -745,7 +790,7 @@ static int process_one(job *j, const char *input_label, const img_pixels *px,
                 r = -1;
             } else {
                 report_item(j->o, input_label, outpath, "sheet",
-                            sheet.w, sheet.h, GetTickCount64() - t0, j->dev);
+                            sheet.w, sheet.h, plat_tick_ms() - t0, j->dev);
             }
             img_free(&sheet);
         }
@@ -771,7 +816,7 @@ static void dl_progress(void *ud, unsigned long long done, unsigned long long to
     prog_ctx *p = (prog_ctx *)ud;
     unsigned long long now;
     if (p->quiet) return;
-    now = GetTickCount64();
+    now = plat_tick_ms();
     if (total && done < total && now - p->last_ms < 100) return;
     p->last_ms = now;
     if (total)
@@ -784,22 +829,14 @@ static void dl_progress(void *ud, unsigned long long done, unsigned long long to
 /* main                                                                      */
 /* ------------------------------------------------------------------------- */
 
-int wmain(int argc, wchar_t **wargv)
+/* The whole program, on a UTF-8 argv. Entry points at the bottom produce
+ * that argv (wmain converts; POSIX main already has it). */
+static int cli_run(int argc, char **argv)
 {
     cli_opts o;
-    char **argv;
     char err[512];
     job j;
     int rc = 0;
-
-    SetConsoleCtrlHandler(on_ctrl, TRUE);
-    _setmode(_fileno(stdin), _O_BINARY);
-    _setmode(_fileno(stdout), _O_BINARY);
-    _setmode(_fileno(stderr), _O_BINARY);
-
-    argv = (char **)calloc((size_t)argc, sizeof(char *));
-    if (!argv) return 2;
-    for (int i = 0; i < argc; i++) argv[i] = w2u(wargv[i]);
 
     rc = parse_args(argc - 1, argv + 1, &o);   /* argv[0] is the exe path */
     if (o.show_help) {
@@ -815,7 +852,7 @@ int wmain(int argc, wchar_t **wargv)
     memset(&j, 0, sizeof j);
     j.o = &o;
     j.prog.quiet = o.quiet;
-    j.exe_dir = exe_dir();
+    j.exe_dir = plat_exe_dir();
     if (!j.exe_dir) {
         err_line("anime-denoise: cannot locate the executable directory");
         return 3;
@@ -825,18 +862,19 @@ int wmain(int argc, wchar_t **wargv)
     if (o.download) {
         eng_model m;
         eng_config cfg;
-        if (_stricmp(o.download, "cugan") == 0) m = ENG_M_CUGAN;
-        else if (_stricmp(o.download, "apisr") == 0) m = ENG_M_APISR;
+        if (plat_stricmp(o.download, "cugan") == 0) m = ENG_M_CUGAN;
+        else if (plat_stricmp(o.download, "apisr") == 0) m = ENG_M_APISR;
         else {
             err_line("anime-denoise: --download expects cugan or apisr, got '%s'",
                      o.download);
             return 2;
         }
         /* the weights land in --models (the user dir); the bundled skeleton
-         * is copied out of <exe>\models next to them to complete the pair */
+         * is copied out of <exe>/models next to them to complete the pair */
         memset(&cfg, 0, sizeof cfg);
-        cfg.models_dir = join_w(j.exe_dir, L"models");
-        cfg.user_models_dir = o.models_dir ? u2w(o.models_dir) : default_models_dir();
+        cfg.models_dir = join_w(j.exe_dir, PLAT_LIT("models"));
+        cfg.user_models_dir = o.models_dir ? plat_u8_to_path(o.models_dir)
+                                         : default_models_dir();
         if (!cfg.models_dir || !cfg.user_models_dir) {
             free((void *)cfg.models_dir);
             free((void *)cfg.user_models_dir);
@@ -866,13 +904,14 @@ int wmain(int argc, wchar_t **wargv)
         }
         if (need[0] || need[1] || need[2]) {
             eng_config cfg;
-            wchar_t *runtime, *models;
+            eng_path_t *runtime, *models;
             memset(&cfg, 0, sizeof cfg);
-            runtime = join_w(j.exe_dir, L"runtime");
-            models = join_w(j.exe_dir, L"models");
+            runtime = join_w(j.exe_dir, PLAT_LIT("runtime"));
+            models = join_w(j.exe_dir, PLAT_LIT("models"));
             cfg.runtime_dir = runtime;
             cfg.models_dir = models;
-            cfg.user_models_dir = o.models_dir ? u2w(o.models_dir) : default_models_dir();
+            cfg.user_models_dir = o.models_dir ? plat_u8_to_path(o.models_dir)
+                                             : default_models_dir();
             cfg.device = o.device;
             cfg.threads = 0;
             j.e = eng_create(&cfg, err, sizeof err);
@@ -933,7 +972,6 @@ int wmain(int argc, wchar_t **wargv)
         char stem[64] = "stdin";
         char outdir[1200];
         const method_def *m = find_method(o.method);
-        unsigned long long t0;
 
         buf = (unsigned char *)malloc(cap);
         if (buf) {
@@ -963,7 +1001,6 @@ int wmain(int argc, wchar_t **wargv)
             size_t n = 0;
             src = px_to_rgb(&px);
             res.rgb = NULL;
-            t0 = GetTickCount64();
             eng_image cache[3] = {{0,0,NULL},{0,0,NULL},{0,0,NULL}};
             int shared = 0;
             rc = run_method(&j, &src, cache, m, &res, &shared, err, sizeof err);
@@ -1043,7 +1080,7 @@ int wmain(int argc, wchar_t **wargv)
             img_pixels px = { NULL, 0, 0 };
             unsigned char *icc = NULL;
             size_t icc_size = 0;
-            char dir[1100], stem[600], outdir[1400];
+            char dir[1100], stem[600], outdir[1800];
 
             if (!img_decode_file_ex(path, &px, &icc, &icc_size)) {
                 err_line("%s: cannot decode", path);
@@ -1079,7 +1116,39 @@ int wmain(int argc, wchar_t **wargv)
 }
 
 /* ------------------------------------------------------------------------- */
-/* update_io.c hooks (GUI substitutes, see header comment)                   */
+/* Entry points                                                              */
+/* ------------------------------------------------------------------------- */
+
+#ifdef _WIN32
+int wmain(int argc, wchar_t **wargv)
+{
+    char **argv;
+    int rc, i;
+
+    install_cancel_handler();
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+
+    argv = (char **)calloc((size_t)argc, sizeof(char *));
+    if (!argv) return 2;
+    for (i = 0; i < argc; i++) argv[i] = w2u(wargv[i]);
+    rc = cli_run(argc, argv);
+    for (i = 0; i < argc; i++) free(argv[i]);
+    free(argv);
+    return rc;
+}
+#else
+int main(int argc, char **argv)
+{
+    install_cancel_handler();
+    /* POSIX stdio is binary by nature; nothing to _setmode. */
+    return cli_run(argc, argv);
+}
+#endif
+
+/* ------------------------------------------------------------------------- */
+/* Download-helper hooks (GUI substitutes, see header comment)                */
 /* ------------------------------------------------------------------------- */
 
 bool upd__stop_requested(void)
