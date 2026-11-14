@@ -30,6 +30,7 @@
  *   tmp\dnbuild\test_denoiser.exe
  */
 #include "denoiser.h"
+#include "denoiser_int.h"   /* whitebox: g_dn flags for the lifecycle checks */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -217,6 +218,31 @@ int main(void) {
     dn_shutdown();
     CHECK(dn_state_get() == DN_STATE_IDLE, "state is IDLE after shutdown");
     CHECK(dn_poll(&ev) == 0, "event ring is drained on shutdown");
+
+    /* ---- dn_start discriminates healthy vs dying workers ----------------- */
+    /* A join that times out orphans the thread holding g_dn (alive=1,
+     * stop=1) until its epilogue lands; dn_start must refuse that state
+     * honestly instead of answering "already up" (a false READY wait was
+     * the 60 s phantom-timeout bug). The thread is gone for real now, so
+     * poking the flags simulates the orphan window safely. */
+    {
+        dn__lock();
+        g_dn.alive = 1;
+        g_dn.stop = 1;
+        dn__unlock();
+        CHECK(!dn_start(ENG_DEV_CPU),
+              "dying worker (alive+stop): dn_start refuses");
+        CHECK(dn_last_error()[0] != 0,
+              "dying worker: last_error explains the refusal");
+        dn__lock();
+        g_dn.stop = 0;
+        dn__unlock();
+        CHECK(dn_start(ENG_DEV_CPU),
+              "healthy worker (alive, !stop): dn_start reports already-up");
+        dn__lock();
+        g_dn.alive = 0;
+        dn__unlock();
+    }
 
     free(px.rgba);
     printf("%s: %d checks, %d failures\n",

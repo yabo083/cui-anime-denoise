@@ -2,7 +2,9 @@
  * units: denoiser.c (thread core: engine lifetime, job/event rings, SR
  * cache) and denoiser_models.c (model management: status queries, selection
  * resolution, deletion, the download job). NOT part of the public API --
- * only src/*.c may include it, and only the denoiser pair may use g_dn. */
+ * only src/*.c and the test drivers that link the same objects (e.g.
+ * tests/test_denoiser.c, which pokes g_dn's flags for lifecycle checks)
+ * may include it, and only the denoiser pair may use g_dn at runtime. */
 #ifndef ANIME_DENOISER_INT_H
 #define ANIME_DENOISER_INT_H
 

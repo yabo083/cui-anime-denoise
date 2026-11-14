@@ -71,6 +71,9 @@
 
 ## 回归门
 
-`lab/测试工程` 跑 1000 次迭代后：14 个性能场景 p95 均在预算内、17 项交互断言全 PASS、
+`lab/测试工程` 跑 1000 次迭代后：14 个性能场景 p95 均在预算内、18 项交互断言全 PASS、
 `report/latest/report.md` 存档。引擎层模型配对/下载语义另由 `tests/test_models.c`
-（无网络，47 断言）与 `tests/test_denoiser.c`（含模型回退）覆盖。
+（无网络，47 断言）与 `tests/test_denoiser.c`（真实引擎 39 断言：模型回退 +
+`dn_start` 白盒判别 alive/stop——join 超时孤儿窗口里必须拒答而非谎报"已就绪"）覆盖。
+任务结果所有权另由 `bench --rerun-e2e`（真实引擎连续重跑，私有字节增长 ≤ 一个结果缓冲）
+守住 `job_apply_done` 的释放顺序。
