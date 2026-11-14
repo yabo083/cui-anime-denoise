@@ -63,6 +63,11 @@ struct eng {
     void *ort_dll;
     const OrtApi *api;
     const OrtDmlApi *dml;
+#ifndef _WIN32
+    /* CUDA EP device found by GetEpDevices; NULL = no usable CUDA GPU.
+     * Owned by e->env, so it stays valid until ReleaseEnv. */
+    const OrtEpDevice *cuda_ep;
+#endif
     OrtEnv *env;
     OrtMemoryInfo *mem_cpu;
     int nthreads;
@@ -181,12 +186,69 @@ static void eng_find_adapter(eng *e) {
     }
     fac->lpVtbl->Release(fac);
 #else
-    /* POSIX: no DXGI, no adapter -- CPU only, so nothing to enumerate. */
+    /* POSIX: no DXGI. CUDA detection happens in eng_probe_gpu_posix()
+     * once the OrtEnv exists -- GetEpDevices lists only providers whose
+     * device enumeration actually succeeded. */
     e->vram_free = 0;
     e->adapter[0] = 0;
     e->adapter_w[0] = 0;
 #endif
 }
+
+#ifndef _WIN32
+/* Find a CUDA-capable EP device. ORT registers each EP's device list only
+ * when its provider library loaded and the driver responded, so a hit here
+ * means CUDA really works; on a GPU-less box (or the slim CPU runtime) the
+ * list just lacks the entry and we silently stay on CPU. */
+static void eng_probe_gpu_posix(eng *e) {
+    const OrtEpDevice *const *eps = NULL;
+    OrtStatus *st;
+    size_t i, n = 0;
+
+    if (!e->api->GetEpDevices) {
+        return;   /* runtime older than 1.22: CPU only */
+    }
+    st = e->api->GetEpDevices(e->env, &eps, &n);
+    if (st) {
+        e->api->ReleaseStatus(st);
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        const char *epn = e->api->EpDevice_EpName
+                              ? e->api->EpDevice_EpName(eps[i])
+                              : NULL;
+        if (!epn || strcmp(epn, "CUDAExecutionProvider") != 0) {
+            continue;
+        }
+        e->cuda_ep = eps[i];
+        /* adapter name for the device label / JSON, best effort */
+        {
+            const OrtHardwareDevice *hw = e->api->EpDevice_Device
+                                              ? e->api->EpDevice_Device(eps[i])
+                                              : NULL;
+            const char *nm = NULL;
+            if (hw && e->api->HardwareDevice_Metadata &&
+                e->api->GetKeyValue) {
+                const OrtKeyValuePairs *md =
+                    e->api->HardwareDevice_Metadata(hw);
+                if (md) {
+                    nm = e->api->GetKeyValue(md, "Description");
+                }
+            }
+            if ((!nm || !*nm) && hw && e->api->HardwareDevice_Vendor) {
+                nm = e->api->HardwareDevice_Vendor(hw);
+            }
+            snprintf(e->adapter, sizeof(e->adapter), "%s",
+                     (nm && *nm) ? nm : "CUDA GPU");
+        }
+        /* VRAM is not queryable here; assume a real discrete card. */
+        if (e->tile_size < ENG_TILE_MID) {
+            e->tile_size = ENG_TILE_MID;
+        }
+        break;
+    }
+}
+#endif
 
 /* --------------------------- create / destroy ----------------------------- */
 
@@ -286,17 +348,6 @@ eng *eng_create(const eng_config *cfg, char *err, size_t cap) {
                                         (const void **)&e->dml);
         /* failure is non-fatal: DML EP may just be absent */
     }
-#else
-    if (cfg->device == ENG_DEV_GPU) {
-        /* same semantics as the DML-fallback note: the GPU was asked for
-         * and cannot be used -- say so in the user's language */
-        snprintf(e->note, sizeof(e->note),
-                 "DirectML \xE5\x9C\xA8\xE6\xAD\xA4\xE5\xB9\xB3\xE5\x8F\xB0"
-                 "\xE4\xB8\x8D\xE5\x8F\xAF\xE7\x94\xA8\xEF\xBC\x8C\xE5\xB7\xB2"
-                 "\xE6\x94\xB9\xE7\x94\xA8 CPU\xEF\xBC\x9B\xE9\x80\x9F\xE5\xBA"
-                 "\xA6\xE4\xBC\x9A\xE6\x85\xA2\xE4\xB8\x80\xE4\xBA\x9B\xE3\x80"
-                 "\x82");
-    }
 #endif
     st = e->api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "anime_engine", &e->env);
     if (st) {
@@ -314,6 +365,22 @@ eng *eng_create(const eng_config *cfg, char *err, size_t cap) {
         free(e);
         return NULL;
     }
+#ifndef _WIN32
+    e->cuda_ep = NULL;
+    if (e->want_gpu) {
+        eng_probe_gpu_posix(e);
+    }
+    if (e->want_gpu && !e->cuda_ep) {
+        /* same semantics as the DML-fallback note: a GPU was wanted (auto
+         * or explicit) and none can be used -- say so in the user's
+         * language, once, up front */
+        snprintf(e->note, sizeof(e->note),
+                 "\xE6\xB2\xA1\xE6\x9C\x89\xE5\x8F\xAF\xE7\x94\xA8\xE7\x9A\x84"
+                 " CUDA GPU\xEF\xBC\x8C\xE5\xB7\xB2\xE6\x94\xB9\xE7\x94\xA8 "
+                 "CPU\xEF\xBC\x9B\xE9\x80\x9F\xE5\xBA\xA6\xE4\xBC\x9A\xE6\x85"
+                 "\xA2\xE4\xB8\x80\xE4\xBA\x9B\xE3\x80\x82");
+    }
+#endif
     snprintf(e->dev_name, sizeof(e->dev_name), "CPU (%d threads)", e->nthreads);
     return e;
 }
@@ -489,7 +556,18 @@ static OrtSession *new_session(eng *e, const eng_path_t *path, int gpu,
         }
     }
 #else
-    (void)gpu;   /* POSIX callers can only ever pass 0 (e->dml is NULL) */
+    if (gpu) {
+        /* Append the EP for the device eng_probe_gpu_posix() found. If the
+         * provider cannot actually be created here the call fails and the
+         * caller retries with a CPU session -- same contract as DML. */
+        st = e->api->SessionOptionsAppendExecutionProvider_V2(
+            so, e->env, &e->cuda_ep, 1, NULL, NULL, 0);
+        if (st) {
+            ort_err(e, err, cap, "AppendExecutionProvider_CUDA", st);
+            e->api->ReleaseSessionOptions(so);
+            return NULL;
+        }
+    }
 #endif
     st = e->api->CreateSession(e->env, path, so, &sess);
     e->api->ReleaseSessionOptions(so);
@@ -574,25 +652,38 @@ bool eng_prepare(eng *e, eng_model m, char *err, size_t cap) {
     }
     s->scale = model_scale(m);
     /* CUGAN is wrong on DML at any size (Phase 1) -> CPU EP always. */
+#ifdef _WIN32
     gpu = e->want_gpu && e->dml && m != ENG_M_CUGAN;
+#else
+    gpu = e->want_gpu && e->cuda_ep && m != ENG_M_CUGAN;
+#endif
 
     if (gpu) {
         s->sess = new_session(e, path, 1, err, cap);
         if (s->sess && !sanity_tile(e, s->sess, s->scale)) {
             e->api->ReleaseSession(s->sess);
             s->sess = NULL;
-            set_err(err, cap, "DirectML sanity tile returned garbage");
+            set_err(err, cap, "GPU sanity tile returned garbage");
         }
         if (s->sess) {
             s->gpu = 1;
             s->prepared = 1;
             e->sessions_gpu = 1;
             snprintf(e->dev_name, sizeof(e->dev_name),
-                     "%s (DirectML)", e->adapter[0] ? e->adapter : "GPU");
+#ifdef _WIN32
+                     "%s (DirectML)",
+#else
+                     "%s (CUDA)",
+#endif
+                     e->adapter[0] ? e->adapter : "GPU");
         } else {
-            /* DirectML can't run on this GPU -> CPU, like denoise.py's note */
+            /* the GPU EP can't run this model -> CPU, like denoise.py's note */
             snprintf(e->note, sizeof(e->note),
+#ifdef _WIN32
                      "DirectML \xE6\x97\xA0\xE6\xB3\x95\xE5\x9C\xA8\xE8\xBF"
+#else
+                     "CUDA \xE6\x97\xA0\xE6\xB3\x95\xE5\x9C\xA8\xE8\xBF"
+#endif
                      "\x99\xE5\xBC\xA0\xE6\x98\xBE\xE5\x8D\xA1\xE4\xB8\x8A"
                      "\xE8\xBF\x90\xE8\xA1\x8C"
                      "\xEF\xBC\x88%s\xEF\xBC\x89\xEF\xBC\x8C\xE5\xB7\xB2"
