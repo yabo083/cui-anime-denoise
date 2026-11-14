@@ -3,6 +3,29 @@
 本项目版本与 GitHub Release 一一对应；GUI 内自动更新读取 Release 资产
 `update.json`（`releases/latest/download/` 始终指向最新版）。
 
+## [Unreleased]
+
+### 新增
+- `anime-denoise` CLI 与推理引擎移植到 Linux x86_64（CPU 推理）：
+  `tools/Makefile.posix` 无 CMake 构建（gcc -O2 -Wall -Wextra 零警告），
+  运行时 `dlopen` `libonnxruntime.so`；`--device gpu|auto` 自动说明并
+  回退 CPU（DirectML 仍为 Windows 专属，Windows 行为不变）。
+- 新增平台缝 `src/plat.h`（路径/文件/目录扫描/线程/原子/时钟/dlopen），
+  实现分 `src/plat_win.c`（原 Win32 语义）与 `src/posix/plat_posix.c`；
+  `engine.c`/`l0.c`/`models.c`/CLI 共用单一代码路径。
+- POSIX 图像后端 `src/posix/img_posix.c`（复用 CUI vendor 的 stb）：
+  保留 alpha、PNG iCCP、JPEG APP2 ICC、EXIF 方向与 16-bit 缩放；
+  `--all` sheet 标签经 stb_truetype + Noto Sans SC Medium 渲染。
+- POSIX 模型下载 `src/posix/download_curl.c`：curl 子进程、流式进度、
+  pinned SHA-256、CUGAN zip 成员（stored/raw-DEFLATE）提取、失败清理，
+  遵循 `http(s)_proxy`；pair 完整语义与 Windows 一致。
+- 部署镜像 `servers/bren9np/anime-denoise/`（`setup.sh` 一键：
+  下载 ONNX Runtime 1.24.4 → 构建 → 摆放 runtime/models/assets）。
+
+### 修复
+- 构建输出零警告：CMP0092 去掉 CMake 注入的 `/W3`（此前每个 TU 都报
+  D9025），vendored CUI 的 C4457 按目标静默（与 pocketfft 的 /wd 同法）。
+
 ## [1.1.5]
 
 ### 新增

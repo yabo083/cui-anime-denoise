@@ -77,3 +77,10 @@
 `dn_start` 白盒判别 alive/stop——join 超时孤儿窗口里必须拒答而非谎报"已就绪"）覆盖。
 任务结果所有权另由 `bench --rerun-e2e`（真实引擎连续重跑，私有字节增长 ≤ 一个结果缓冲）
 守住 `job_apply_done` 的释放顺序。
+
+POSIX（`tools/Makefile.posix`）侧另有人工验收：Ubuntu 24.04/gcc 13.3 零警告构建；
+文件/文件夹/stdin/stdout/JSON/`--all` sheet/EXIF 方向/ICC 往返/16-bit 输入/模型
+下载（zip+pth、SHA-256、pair 完整）/SIGINT 取消/`--device gpu` 回退逐项验证；
+七种方法输出对 Windows GPU 参考 RMSE ≤ 1.8e-4（cugan60/cugan60_l0/l0_* 像素一致，
+差异为 CPU-vs-GPU 浮点），部署镜像 `servers/bren9np/anime-denoise/` 的 `setup.sh`
+从零重建可复现同一结果。

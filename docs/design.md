@@ -269,3 +269,28 @@ QUEUED ──ready──► RUNNING ──done──► DONE ──(参数变)�
   「下载」键天然兼作修复；网络返回 `pth_looks_done` 短路。
 - **删除只清 `user_models_dir` 的 pair**；删除当前选中模型时选择同时
   归零回 ESRGAN。CUGAN 的「仅 CPU」在选项描述里明示（§7.2 的硬约束）。
+
+### 7.7 POSIX 移植（`src/plat.h` + `src/posix/`）
+
+CLI 与引擎整体移植到 Linux x86_64（CPU only），Windows/MSVC 保持主平台。
+差异全部收敛在一层平台缝 `src/plat.h`：`eng_path_t`（Windows `wchar_t` /
+POSIX UTF-8 `char`）、文件/目录、目录扫描、大小写不敏感比较、原子标志、
+`plat_tick_ms`/`plat_num_cpus`、线程 spawn/join、`dlopen/dlsym`。
+`src/plat_win.c` 是原有 Win32 语义的搬迁，`src/posix/plat_posix.c` 用
+pthread、UTF-8 路径、`/proc/self/exe`、GCC 原子实现同一契约——
+`engine.c` / `l0.c` / `models.c` / CLI 因此保持单一代码路径，`#ifdef`
+只留在少数真正分歧点（DirectML 会话追加、`--device gpu` 的回退提示）。
+
+替换的是**后端**不是逻辑：`img_posix.c` 用 CUI 已 vendor 的 stb 三件套
+（decode/write/truetype）复刻 WIC 路径的全部可观察行为——RGBA 解码、
+PNG iCCP 与 JPEG APP2 ICC 保留、EXIF 方向、16-bit 按 `v/257+0.5` 缩放、
+resize 复用 `engine/resample.c` 同一份 Pillow 移植；`download_curl.c`
+用 `curl` 子进程顶替 WinHTTP 的 `upd__download_to_file` 契约（流式进度、
+期望尺寸、SHA-256、取消、失败清理）；sheet 标签用 stb_truetype + 同一
+Noto Sans SC Medium 字体，字体缺失留空不报错。
+
+POSIX 下 `ENG_DEV_GPU` 不做任何 DirectML 尝试：打印一行说明、按 CPU 跑、
+JSON 报告 `"cpu"`。构建是 `tools/Makefile.posix`（gcc -O2 -Wall -Wextra，
+零警告），部署镜像与一键 `setup.sh` 在 `servers/bren9np/anime-denoise/`。
+像素级验收：Ubuntu 24.04 CPU 输出对 Windows GPU 参考 RMSE ≤ 1.8e-4，
+其中 cugan60/cugan60_l0/l0_* 像素完全一致（纯 CPU-vs-GPU 浮点差异）。

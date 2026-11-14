@@ -131,3 +131,33 @@ MiSans/OPPO Sans/阿里普惠体（均专有许可，同病）。OFL 是唯一�
 **代价**：模型行每帧 3 次文件状态检查（沿用旧行已有做法，代价可忽略）；
 CUGAN 的「仅 CPU」约束只能写在选项描述里提示，不拦截。
 **状态**：已采纳（1.1.5）。
+
+## ADR-015 平台缝而非 ifdef 农场：POSIX 支持不改 Windows 语义
+
+**背景**：目标是把 `anime-denoise` CLI + 原生引擎带上 Linux x86_64
+（服务器 bren9np，CPU 推理），但 Windows/MSVC 是第一平台不得回归。
+直接打 `#ifdef _WIN32` 补丁会把 engine.c/l0.c/models.c/main.c 撕成
+两套写法，回归面失控。
+**决定**：
+- 新增 `src/plat.h` 一层窄平台 API（路径类型 `eng_path_t`、文件/目录/
+  扫描/比较、原子标志、计时、CPU 数、线程 spawn/join、dlopen），
+  `src/plat_win.c` 承载**原有** Win32 语义、`src/posix/plat_posix.c`
+  用 pthread/UTF-8/dlopen/`/proc/self/exe` 实现同一契约。共享代码全部走
+  `plat_*`，平台分歧只剩两处真差异：DirectML 会话追加（`_WIN32`）与
+  GPU 回退说明。
+- 后端可换、逻辑不换：POSIX 图像用 CUI 已 vendor 的 stb（`img_posix.c`），
+  下载用 curl 子进程（`download_curl.c` 实现 `upd__download_to_file`
+  同一签名），SHA-256 抽成 `src/sha256.c` 供两端共用（Windows 此前埋在
+  update_io.c 的 bcrypt 版本接口不变）。`eng_path_t` 让 ORT 会话路径在
+  两端类型正确（`wchar_t` vs `ORTCHAR_T`=char）。
+- 行为红线照抄 Windows：iCCP/APP2 ICC、EXIF 方向、16-bit `v/257+0.5`、
+  pair 完整才算下载成功、sheet 4x2 布局与同一字体（stb_truetype 渲染，
+  缺字体留空）。`--device gpu` 在 POSIX 打说明跑 CPU，不误报 DML。
+- 构建不加新工具链：`tools/Makefile.posix`（gcc -Wall -Wextra 零警告），
+  CMake 只属于 Windows；部署镜像 + `setup.sh` 放 `servers/bren9np/`。
+**代价**：`plat_*` 抽象比直接调 API 多一跳（都是 trivial 包装）；
+Windows 侧 img.c 拆出 `img_common.c` 供两端共享平台无关部分。
+**验收**：Ubuntu 24.04 GCC 13.3 零警告；七种方法对 Windows GPU 参考
+RMSE ≤ 1.8e-4（4/7 像素一致）；Windows 侧 build.ps1 零警告、
+bench I1–I18 PASS、test_denoiser 39/39、DML 输出与参考位相同。
+**状态**：已采纳。

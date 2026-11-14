@@ -38,3 +38,35 @@ anime-denoise out1.png out2.png --json | jq .output
 type a.png | anime-denoise - --stdout > a_clean.png
 for %f in (*.png) do anime-denoise "%f" --out clean
 ```
+
+## POSIX / Linux 构建
+
+同一 CLI 也构建于 Linux x86_64（Ubuntu 24.04 验证），产物
+`build-posix/anime-denoise`，无 CMake、无 GUI 依赖：
+
+```bash
+make -f tools/Makefile.posix -j$(nproc)
+```
+
+运行前提：`<exe>/runtime/libonnxruntime.so`（dlopen；找不到时退回动态
+链接器默认搜索路径）与 `<exe>/models/`。`servers/bren9np/anime-denoise/
+setup.sh` 一键完成 ONNX Runtime 下载、构建与目录摆放。
+
+与 Windows 版的行为差异（仅平台使然，输出语义一致）：
+
+- **仅 CPU**：`--device gpu|auto` 打印一行说明后按 CPU 运行；
+  `--json` 的 `device` 恒为 `"cpu"`。
+- **图像 I/O 走 stb**（`src/posix/img_posix.c`）：PNG/JPEG/WebP 等解码
+  RGBA，PNG/JPEG 编码；PNG iCCP、JPEG APP2 ICC、JPEG EXIF 方向、alpha、
+  16-bit 输入（按 `v/257+0.5` 缩放）全部保留——与 WIC 路径逐项对齐。
+- **sheet 标签**用 stb_truetype 渲染 `assets/fonts/NotoSansSC-Medium.ttf`；
+  字体缺失时留空标签，不报错。
+- **路径**为 UTF-8 `char`（Windows 为 `wchar_t`）；`--models` 默认
+  `$XDG_DATA_HOME/anime-denoise/models` 或 `~/.local/share/anime-denoise/models`。
+- **下载** shell 到 `curl`（`src/posix/download_curl.c`），走
+  `http_proxy`/`https_proxy` 环境变量；zip 成员解压（stored + raw
+  DEFLATE）与 SHA-256 校验语义同 Windows。
+- **剪贴板**无 POSIX 对应物，CLI 本来就不用。
+- 引擎侧差异收敛在 `src/plat.h`（`src/posix/plat_posix.c` 实现）：
+  `dlopen` 取代 `LoadLibraryW`，pthread 取代 `CreateThread`，
+  `/proc/self/exe` 取代 `GetModuleFileNameW`，GCC 原子取代 Interlocked。

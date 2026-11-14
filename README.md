@@ -87,6 +87,19 @@ ONNX Runtime + DirectML DLL 和 esrgan 模型；`models/*.skel.onnx` 已入库�
 `mise run assets` 从 `_dl/` 里的原始字体重新生成子集（Noto Sans SC 的 GB2312 子集、完整 Lucide 图标字体），
 `mise run check-fonts` 校验 `src/` 里出现的每个非 ASCII 字符都在 UI 字体里 —— 构建前的守门检查。
 
+### Linux（CLI 专用，无 GUI）
+
+命令行工具也可在 Linux x86_64 构建（仅 CPU，DirectML 仍是 Windows 专属）：
+
+```bash
+make -f tools/Makefile.posix -j$(nproc)   # 产物 build-posix/anime-denoise
+```
+
+只需 gcc、make、curl、tar；运行依赖 `<exe>/runtime/libonnxruntime.so` 与
+`<exe>/models/`。`servers/bren9np/anime-denoise/setup.sh` 给出完整的
+下载运行时 + 构建 + 摆放流程；CLI 行为差异见 `docs/cli-spec.md` 的
+「POSIX / Linux 构建」一节。
+
 ## 模型
 
 | 模型 | 来源 | 随包 |
