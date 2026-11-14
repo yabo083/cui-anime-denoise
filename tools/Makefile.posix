@@ -17,7 +17,7 @@
 CC       ?= gcc
 ROOT     := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 OUT      ?= $(ROOT)/build-posix
-VERSION  ?= 1.1.6
+VERSION  ?= 1.1.7
 
 CPPFLAGS += -I$(ROOT)/src \
             -I$(ROOT)/third_party/onnxruntime/include \
